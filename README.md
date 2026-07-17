@@ -54,7 +54,7 @@ python -m venv .venv
 Экспортируйте чат из Telegram Desktop (⋮ → Export chat history → формат JSON, медиа не нужны), положите JSON в `data/tg_chats/` и запустите:
 
 ```powershell
-.\.venv\Scripts\python.exe -m src.index add "data\tg_chats\ChatExport.json" --collection mytopic --min-chars 80
+.\.venv\Scripts\python.exe -m src.index add-tg-chat "data\tg_chats\ChatExport.json" --collection mytopic --min-chars 80
 ```
 
 - `--collection` — имя коллекции; новой темы ещё нет — папка создастся сама. Указывайте всегда явно.

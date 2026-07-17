@@ -191,6 +191,21 @@ class RawStore:
         to_dicts = lambda rows: [dict(zip(cols, r)) for r in rows]
         return {"before": list(reversed(to_dicts(before))), "after": to_dicts(after)}
 
+    # ---------- Удаление источников ----------
+
+    def delete_chat(self, chat_id: str) -> int:
+        """Удаляет все сырые сообщения чата. Возвращает число удалённых строк."""
+        n = self.conn.execute("DELETE FROM messages WHERE chat_id=?", (str(chat_id),)).rowcount
+        self.conn.commit()
+        return n
+
+    def delete_video(self, video_id: str) -> tuple[int, int]:
+        """Удаляет сырые комментарии и чанки транскрипции видео. Возвращает (комментов, чанков)."""
+        c = self.conn.execute("DELETE FROM yt_comments WHERE video_id=?", (str(video_id),)).rowcount
+        ch = self.conn.execute("DELETE FROM yt_chunks WHERE video_id=?", (str(video_id),)).rowcount
+        self.conn.commit()
+        return c, ch
+
     def stats(self) -> dict[str, Any]:
         """Статистика по источникам для index list."""
         out: dict[str, Any] = {}

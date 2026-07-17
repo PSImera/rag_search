@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,41 @@ from typing import Any
 from src.config import YOUTUBE_ROOT
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def set_cookie_source(from_browser: str | None = None, cookie_file: str | None = None) -> None:
+    """Задаёт источник cookies для yt-dlp (обход бот-проверки YouTube).
+
+    Точки входа зовут это из своих CLI-флагов; значения кладутся в env, чтобы их
+    подхватил каждый вызов yt-dlp (и в фазовых, и в параллельных запусках).
+    """
+    if from_browser:
+        os.environ["RAG_YT_COOKIES_FROM_BROWSER"] = from_browser
+    if cookie_file:
+        os.environ["RAG_YT_COOKIES_FILE"] = cookie_file
+
+
+def _parse_browser_spec(spec: str) -> tuple[str, str | None, str | None, str | None]:
+    """Разбирает строку CLI-формата BROWSER[+KEYRING][:PROFILE][::CONTAINER] в кортеж,
+    который ждёт Python-API yt-dlp (сам он парсит двоеточия только на командной строке).
+
+    Пример: 'chrome:Profile 2' → ('chrome', 'Profile 2', None, None).
+    """
+    rest, _, container = spec.partition("::")
+    head, _, profile = rest.partition(":")
+    browser, _, keyring = head.partition("+")
+    return (browser.strip().lower(), profile.strip() or None, keyring.strip() or None, container.strip() or None)
+
+
+def _cookie_opts() -> dict[str, Any]:
+    """Опции cookies для yt-dlp из env (см. set_cookie_source). Пусто — если не заданы."""
+    browser = os.environ.get("RAG_YT_COOKIES_FROM_BROWSER")
+    if browser:
+        return {"cookiesfrombrowser": _parse_browser_spec(browser)}
+    cookiefile = os.environ.get("RAG_YT_COOKIES_FILE")
+    if cookiefile:
+        return {"cookiefile": cookiefile}
+    return {}
 
 
 def extract_video_id(url_or_id: str) -> str:
@@ -57,9 +93,11 @@ def fetch_video_info(video_id: str) -> dict[str, Any]:
 
     import yt_dlp
 
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "extract_flat": False}
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "extract_flat": False, **_cookie_opts()}
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+        # process=False — берём только метаданные, без разбора форматов видео (нам они не нужны;
+        # на части видео резолв формата падает «Requested format is not available»)
+        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False, process=False)
     slim = {
         "video_id": video_id,
         "title": info.get("title") or "",
@@ -90,14 +128,20 @@ def fetch_comments(video_id: str, info: dict[str, Any]) -> list[dict[str, Any]]:
         "no_warnings": True,
         "skip_download": True,
         "getcomments": True,
+        # часть видео не отдаёт плейбек-форматы (закрыты/недоступны), но комменты есть —
+        # без этого флага yt-dlp падает «Requested format is not available» ещё до выдачи комментов
+        "ignore_no_formats_error": True,
+        **_cookie_opts(),
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             raw = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
         comments = raw.get("comments") or []
     except Exception as exc:
-        print(f"[warn] Комментарии для {video_id} недоступны: {exc}")
-        comments = []
+        # обрыв/бот-блок/лимит — НЕ кэшируем пустой результат, иначе cache-hit навсегда
+        # закроет видео от повторной попытки; следующий запуск попробует снова
+        print(f"[warn] Комментарии для {video_id} недоступны (не кэширую, повтори позже): {exc}")
+        return []
 
     normalized: list[dict[str, Any]] = []
     for c in comments:
@@ -126,6 +170,16 @@ def fetch_comments(video_id: str, info: dict[str, Any]) -> list[dict[str, Any]]:
     return normalized
 
 
+# взводится при первом IP-блоке субтитров — глушит дальнейшие сетевые попытки субтитров в этом прогоне
+# (сбрасывается сам при новом запуске процесса; комментарии и кэш-хиты это не затрагивает)
+_subs_blocked = False
+
+
+def _mark_subs_blocked() -> None:
+    global _subs_blocked
+    _subs_blocked = True
+
+
 def fetch_transcript(video_id: str, info: dict[str, Any], lang: str = "ru") -> list[dict[str, Any]] | None:
     """Транскрипция: youtube-transcript-api (ручные + автосубтитры, фолбэк en),
     запасной путь — yt-dlp --write-auto-subs (vtt). Кэш: transcript_<lang>.json.
@@ -139,33 +193,64 @@ def fetch_transcript(video_id: str, info: dict[str, Any], lang: str = "ru") -> l
             data = json.loads(cache.read_text(encoding="utf-8"))
             return data if data else None
 
-    snippets = _transcript_via_api(video_id, lang)
+    # субтитровый эндпоинт уже забанил IP в этом прогоне — не долбим дальше, вернём None
+    # (пустышку не кэшируем, поэтому следующий запуск повторит эти видео)
+    if _subs_blocked:
+        print(f"[info] Пропускаю субтитры {video_id}: эндпоинт заблокирован ранее в этом прогоне (повтори позже)")
+        return None
+
+    # фолбэк-цепочка; при блоке на любом шаге дальнейшие каналы не пробуем (не греем лимит)
+    snippets, blocked = _transcript_via_api(video_id, lang)
     used_lang = lang
-    if snippets is None:
-        snippets = _transcript_via_ytdlp(video_id, lang)
-    if snippets is None and lang != "en":
-        snippets = _transcript_via_api(video_id, "en")
-        used_lang = "en"
+    if snippets is None and not blocked:
+        snippets, blocked = _transcript_via_ytdlp(video_id, lang)
+    if snippets is None and not blocked and lang != "en":
+        s3, b3 = _transcript_via_api(video_id, "en")
+        blocked = b3
+        if s3 is not None:
+            snippets, used_lang = s3, "en"
+
+    # временный бот-блок/429/IpBlocked — НЕ кэшируем (следующий запуск повторит) и глушим
+    # субтитры до конца прогона. Пустой кэш ставим только при настоящем отсутствии (стрим, субтитры off).
+    if snippets is None and blocked:
+        _mark_subs_blocked()
+        print(f"[warn] Субтитры {video_id}: блокировка/лимит эндпоинта — не кэширую и отключаю "
+              f"дальнейшие попытки субтитров в этом прогоне (повтори позже)")
+        return None
 
     cache = d / f"transcript_{used_lang if snippets else lang}.json"
     cache.write_text(json.dumps(snippets or [], ensure_ascii=False), encoding="utf-8")
     return snippets
 
 
-def _transcript_via_api(video_id: str, lang: str) -> list[dict[str, Any]] | None:
+# индикаторы временной блокировки/лимита (в отличие от настоящего отсутствия субтитров)
+_BLOCK_EXC_NAMES = {"IpBlocked", "RequestBlocked", "TooManyRequests", "YouTubeRequestFailed"}
+_BLOCK_NEEDLES = ("429", "too many requests", "sign in to confirm", "not a bot", "ipblocked", "rate limit")
+
+
+def _is_transient_block(exc: Exception) -> bool:
+    """True — если ошибка про блокировку/лимит (её кэшировать как «нет транскрипции» нельзя)."""
+    if type(exc).__name__ in _BLOCK_EXC_NAMES:
+        return True
+    msg = str(exc).lower()
+    return any(n in msg for n in _BLOCK_NEEDLES)
+
+
+def _transcript_via_api(video_id: str, lang: str) -> tuple[list[dict[str, Any]] | None, bool]:
+    """Возвращает (сниппеты|None, blocked). blocked=True — временная блокировка/лимит."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
 
         api = YouTubeTranscriptApi()
         fetched = api.fetch(video_id, languages=[lang])
-        return [{"text": s.text, "start": s.start, "duration": s.duration} for s in fetched]
+        return [{"text": s.text, "start": s.start, "duration": s.duration} for s in fetched], False
     except Exception as exc:
         print(f"[info] youtube-transcript-api ({lang}) не сработал для {video_id}: {type(exc).__name__}")
-        return None
+        return None, _is_transient_block(exc)
 
 
-def _transcript_via_ytdlp(video_id: str, lang: str) -> list[dict[str, Any]] | None:
-    """Фолбэк: yt-dlp скачивает автосубтитры vtt, парсим их."""
+def _transcript_via_ytdlp(video_id: str, lang: str) -> tuple[list[dict[str, Any]] | None, bool]:
+    """Фолбэк: yt-dlp скачивает автосубтитры vtt, парсим их. Возвращает (сниппеты|None, blocked)."""
     import tempfile
 
     import yt_dlp
@@ -180,17 +265,19 @@ def _transcript_via_ytdlp(video_id: str, lang: str) -> list[dict[str, Any]] | No
             "subtitleslangs": [lang, f"{lang}-orig"],
             "subtitlesformat": "vtt",
             "outtmpl": str(Path(tmp) / "%(id)s.%(ext)s"),
+            "ignore_no_formats_error": True,
+            **_cookie_opts(),
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
         except Exception as exc:
             print(f"[info] yt-dlp субтитры не сработали для {video_id}: {type(exc).__name__}")
-            return None
+            return None, _is_transient_block(exc)
         vtts = sorted(Path(tmp).glob("*.vtt"))
         if not vtts:
-            return None
-        return parse_vtt(vtts[0].read_text(encoding="utf-8"))
+            return None, False
+        return parse_vtt(vtts[0].read_text(encoding="utf-8")), False
 
 
 _TS_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})")
@@ -241,6 +328,41 @@ def parse_vtt(vtt: str) -> list[dict[str, Any]]:
                 continue
         deduped.append(dict(s))
     return deduped
+
+
+_SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+
+
+def split_long_text(text: str, max_chars: int, target_chars: int | None = None) -> list[str]:
+    """Режет длинный текст на части не длиннее max_chars по границам предложений.
+
+    Короткий текст (<= max_chars) возвращается одним элементом — id таких чанков не
+    меняется, старая индексация остаётся идемпотентной. Предложение, которое само длиннее
+    max_chars (стена без пунктуации, ссылка), режется жёстко по границе символов.
+    """
+    text = text.strip()
+    if len(text) <= max_chars:
+        return [text]
+    target = target_chars or max_chars
+    pieces: list[str] = []
+    buf = ""
+    for sent in _SENT_SPLIT.split(text):
+        while len(sent) > max_chars:
+            if buf:
+                pieces.append(buf)
+                buf = ""
+            pieces.append(sent[:max_chars])
+            sent = sent[max_chars:]
+        if not buf:
+            buf = sent
+        elif len(buf) + 1 + len(sent) <= target:
+            buf += " " + sent
+        else:
+            pieces.append(buf)
+            buf = sent
+    if buf:
+        pieces.append(buf)
+    return [p for p in pieces if p.strip()]
 
 
 _SENT_END = re.compile(r"[.!?…]\s*$")

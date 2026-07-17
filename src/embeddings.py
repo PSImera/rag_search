@@ -11,6 +11,7 @@ from src.config import (
     EMBEDDING_MODEL,
     EMBEDDING_PASSAGE_PREFIX,
     EMBEDDING_QUERY_PREFIX,
+    GPU_BATCH_SIZE,
 )
 
 
@@ -48,11 +49,6 @@ class E5Embeddings:
                 return str(snaps[0])
         return model_name
 
-    # Внутренний батч GPU. ВАЖНО: не увеличивать бездумно — на 8GB VRAM батч 128
-    # с длинными сообщениями (512 токенов) переполняет память и включает
-    # CUDA sysmem fallback (спилл в RAM через PCIe) => замедление в ~50 раз.
-    GPU_BATCH_SIZE = 32
-
     def embed_passages(self, texts: list[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.dim), dtype=np.float32)
@@ -62,7 +58,7 @@ class E5Embeddings:
             [EMBEDDING_PASSAGE_PREFIX + t for t in texts],
             normalize_embeddings=True,
             convert_to_numpy=True,
-            batch_size=self.GPU_BATCH_SIZE,
+            batch_size=GPU_BATCH_SIZE,
             show_progress_bar=False,
         )
         return vectors.astype(np.float32)

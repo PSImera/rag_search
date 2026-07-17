@@ -65,6 +65,22 @@ class VectorStore:
         for i, meta in zip(ids, metadatas):
             self.docstore[int(i)] = meta
 
+    def remove_ids(self, ids: list[int]) -> int:
+        """Удаляет векторы по id из FAISS-индекса и docstore. GPU не задействуется.
+
+        Возвращает число фактически удалённых. IndexIDMap2 поддерживает remove_ids;
+        индекс физически ужимается, ntotal уменьшается.
+        """
+        if self.index is None or not ids:
+            return 0
+        present = [int(i) for i in ids if int(i) in self.docstore]
+        if not present:
+            return 0
+        self.index.remove_ids(np.asarray(present, dtype=np.int64))  # type: ignore[call-arg]
+        for i in present:
+            self.docstore.pop(i, None)
+        return len(present)
+
     def save(self, extra_meta: dict[str, Any] | None = None) -> None:
         assert self.index is not None
         faiss.write_index(self.index, str(self.index_file))
