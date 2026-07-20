@@ -232,6 +232,7 @@ def fetch_transcript(
     lang: str = "ru",
     use_asr: bool = False,
     asr_model: str = "large-v3",
+    force_asr: bool = False,
 ) -> list[dict[str, Any]] | None:
     """Транскрипция единственным способом — yt-dlp (--write-subs + --write-auto-subs, vtt);
     если субтитров нет и use_asr=True — локальное распознавание аудио через Whisper
@@ -240,6 +241,11 @@ def fetch_transcript(
     Один сетевой запрос субтитров на видео: несколько параллельных способов забора
     (youtube-transcript-api + en-фолбэк) убраны — они множили запросы и провоцировали
     IP-бан YouTube. Комментарии и так тянутся через yt-dlp, субтитры теперь тоже.
+
+    force_asr=True — субтитры YouTube игнорируются полностью (даже если они есть):
+    транскрипт всегда строится распознаванием аудио через Whisper. Нужно, когда
+    автосубтитры кривые. Готовый непустой кэш при этом всё равно переиспользуется
+    (идемпотентный resume) — чтобы перегнать заново, удали папку видео в data/youtube/.
 
     Возвращает список {text, start, duration} или None, если транскрипции нет.
     """
@@ -253,6 +259,17 @@ def fetch_transcript(
         no_captions_cached = True
 
     snippets: list[dict[str, Any]] | None = None
+
+    if force_asr:
+        # субтитры не трогаем вообще — сразу распознаём аудио
+        snippets = transcribe_with_whisper(video_id, lang=lang, model_size=asr_model)
+        if snippets is None:
+            print(
+                f"[warn] ASR не дал результата для {video_id}, не кэширую (повтори позже)"
+            )
+            return None
+        cache.write_text(json.dumps(snippets, ensure_ascii=False), encoding="utf-8")
+        return snippets
 
     if no_captions_cached:
         pass  # уже точно знаем, что субтитров нет — сразу к ASR (если запрошен)

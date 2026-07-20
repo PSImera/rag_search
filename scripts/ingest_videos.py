@@ -45,11 +45,15 @@ from src.youtube import (
 )
 
 
-def download_one(video_id: str, lang: str) -> dict:
-    """Фаза 1 для одного видео: тянем всё в кэш, возвращаем краткий статус (без модели)."""
+def download_one(video_id: str, lang: str, fetch_subs: bool = True) -> dict:
+    """Фаза 1 для одного видео: тянем всё в кэш, возвращаем краткий статус (без модели).
+
+    fetch_subs=False (режим --asr) — субтитры не трогаем, транскрипт делается позже в фазе 1.5
+    распознаванием аудио.
+    """
     info = fetch_video_info(video_id)
     comments = fetch_comments(video_id, info)
-    snippets = fetch_transcript(video_id, info, lang=lang)
+    snippets = fetch_transcript(video_id, info, lang=lang) if fetch_subs else None
     return {
         "video_id": video_id,
         "title": info["title"],
@@ -91,7 +95,8 @@ def main() -> None:
     ap.add_argument(
         "--asr",
         action="store_true",
-        help="Видео без субтитров (ни ручных, ни авто) распознавать локально через Whisper (GPU)",
+        help="Игнорировать субтитры YouTube: транскрипт ВСЕХ видео строить распознаванием "
+        "аудио через Whisper (GPU). Нужно, когда автосубтитры кривые.",
     )
     ap.add_argument(
         "--asr-model", default="large-v3", help="Модель faster-whisper для --asr"
@@ -130,7 +135,11 @@ def main() -> None:
     status: dict[str, dict] = {}
     errors: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=args.download_workers) as ex:
-        futs = {ex.submit(download_one, vid, args.lang): vid for vid in video_ids}
+        # в режиме --asr субтитры не качаем вообще — транскрипт делается в фазе 1.5 из аудио
+        futs = {
+            ex.submit(download_one, vid, args.lang, not args.asr): vid
+            for vid in video_ids
+        }
         for done, fut in enumerate(as_completed(futs), 1):
             vid = futs[fut]
             try:
@@ -149,24 +158,23 @@ def main() -> None:
                 errors[vid] = str(exc)[:200]
                 print(f"[{done}/{len(video_ids)}] {vid}  [error] {exc}")
 
-    # ── Фаза 1.5: ASR для видео без субтитров (последовательно, модель Whisper грузится один раз) ──
+    # ── Фаза 1.5: ASR всех видео из аудио (--asr игнорирует субтитры YouTube) ──────────
+    # Последовательно, модель Whisper грузится один раз; готовый непустой кэш пропускается.
     if args.asr:
-        no_transcript_ids = [
-            vid
-            for vid in video_ids
-            if vid not in errors and status[vid]["no_transcript"]
-        ]
-        if no_transcript_ids:
+        asr_ids = [vid for vid in video_ids if vid not in errors]
+        if asr_ids:
             print(
-                f"\n{'='*80}\nФАЗА 1.5 — ASR без субтитров ({len(no_transcript_ids)} видео)\n{'='*80}"
+                f"\n{'='*80}\nФАЗА 1.5 — ASR из аудио ({len(asr_ids)} видео, субтитры YouTube игнорируются)\n{'='*80}"
             )
-            for done, vid in enumerate(no_transcript_ids, 1):
+            for done, vid in enumerate(asr_ids, 1):
                 info = fetch_video_info(vid)
-                print(
-                    f"[{done}/{len(no_transcript_ids)}] ASR: {vid} «{info['title'][:50]}»"
-                )
+                print(f"[{done}/{len(asr_ids)}] ASR: {vid} «{info['title'][:50]}»")
                 snippets = fetch_transcript(
-                    vid, info, lang=args.lang, use_asr=True, asr_model=args.asr_model
+                    vid,
+                    info,
+                    lang=args.lang,
+                    force_asr=True,
+                    asr_model=args.asr_model,
                 )
                 status[vid]["transcript_snippets"] = len(snippets or [])
                 status[vid]["no_transcript"] = not snippets
@@ -199,7 +207,11 @@ def main() -> None:
             "transcript_chunks": 0,
         }
 
-        snippets = fetch_transcript(vid, info, lang=args.lang)
+        # кэш-хит для уже готовых (фаза 1 или 1.5); force_asr держит семантику --asr,
+        # если у видео ещё нет кэша (ASR в 1.5 сорвался) — субтитры YouTube не подхватятся
+        snippets = fetch_transcript(
+            vid, info, lang=args.lang, force_asr=args.asr, asr_model=args.asr_model
+        )
         if snippets:
             raw_rows, chunks = yt_transcript_chunks(
                 vid, info, chunk_transcript(snippets), args.lang

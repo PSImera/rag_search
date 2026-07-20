@@ -70,20 +70,20 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m src.index add-yt-transcript "https://youtu.be/KjhI4vDfMdY" --collection mytopic --lang ru
 ```
 
-Субтитры забираются через yt-dlp. Если у видео нет ни ручных, ни автоматических субтитров, добавьте `--asr` — аудио будет распознано локально через Whisper (`faster-whisper`, GPU):
+Субтитры забираются через yt-dlp. Если субтитров нет или они кривые (частая беда автосубтитров), добавьте `--asr` — субтитры YouTube игнорируются полностью, а транскрипт строится распознаванием аудио локально через Whisper (`faster-whisper`, GPU):
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.index add-yt-transcript "https://youtu.be/KjhI4vDfMdY" --collection mytopic --lang ru --asr
 ```
 
-- `--asr` качает аудио во временную папку и удаляет его сразу после распознавания (в кэше остаётся только готовый текст транскрипции).
+- `--asr` качает аудио во временную папку и удаляет его сразу после распознавания (в кэше остаётся только готовый текст транскрипции). Уже готовый непустой транскрипт переиспользуется — чтобы перегнать заново, удалите папку видео в `data/youtube/`.
 - `--asr-model` — модель распознавания (дефолт `large-v3`; полегче/побыстрее — `medium`, `distil-large-v3`).
 
 Пакетно — список ссылок в файле (по одной в строке, `#` — комментарий), удобно держать в `docs/`. Ссылка на плейлист (`youtube.com/playlist?list=...`) разворачивается во все видео плейлиста автоматически:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\ingest_videos.py docs\videos.md --collection mytopic
-# с локальной транскрипцией видео без субтитров:
+# --asr: субтитры YouTube игнорируются, транскрипт всех видео строится из аудио (Whisper):
 .\.venv\Scripts\python.exe scripts\ingest_videos.py docs\videos.md --collection mytopic --asr
 ```
 

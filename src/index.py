@@ -326,8 +326,9 @@ def add_yt_transcript(
 ) -> dict:
     """Индексация транскрипции YouTube-видео. Чанки ~500-700 символов с таймингами.
 
-    asr=True — если у видео нет ни ручных, ни автоматических субтитров, распознаёт
-    аудио локально через Whisper (см. src.youtube.transcribe_with_whisper).
+    asr=True — субтитры YouTube игнорируются, транскрипт строится распознаванием аудио
+    через Whisper (см. src.youtube.transcribe_with_whisper). Нужно, когда автосубтитры
+    кривые или их нет. Без asr берутся субтитры YouTube (yt-dlp).
     """
     from src.youtube import (
         chunk_transcript,
@@ -340,7 +341,7 @@ def add_yt_transcript(
     info = fetch_video_info(video_id)
     print(f"Видео: {info['channel']} — {info['title']} [{video_id}]")
     snippets = fetch_transcript(
-        video_id, info, lang=lang, use_asr=asr, asr_model=asr_model
+        video_id, info, lang=lang, force_asr=asr, asr_model=asr_model
     )
     if not snippets:
         print(
@@ -533,7 +534,8 @@ def build_parser() -> argparse.ArgumentParser:
     yt.add_argument(
         "--asr",
         action="store_true",
-        help="Если субтитров нет (ни ручных, ни авто) — распознать аудио локально через Whisper (GPU)",
+        help="Игнорировать субтитры YouTube и распознать аудио локально через Whisper (GPU). "
+        "Нужно, когда автосубтитры кривые или их нет.",
     )
     yt.add_argument(
         "--asr-model", default="large-v3", help="Модель faster-whisper для --asr"
