@@ -281,14 +281,20 @@ def yt_transcript_chunks(video_id: str, info: dict, chunks_in: list[dict], lang:
     return raw_rows, chunks
 
 
-def add_yt_transcript(url_or_id: str, collection: str, lang: str = "ru") -> dict:
-    """Индексация транскрипции YouTube-видео. Чанки ~500-700 символов с таймингами."""
+def add_yt_transcript(
+    url_or_id: str, collection: str, lang: str = "ru", asr: bool = False, asr_model: str = "large-v3"
+) -> dict:
+    """Индексация транскрипции YouTube-видео. Чанки ~500-700 символов с таймингами.
+
+    asr=True — если у видео нет ни ручных, ни автоматических субтитров, распознаёт
+    аудио локально через Whisper (см. src.youtube.transcribe_with_whisper).
+    """
     from src.youtube import chunk_transcript, extract_video_id, fetch_transcript, fetch_video_info
 
     video_id = extract_video_id(url_or_id)
     info = fetch_video_info(video_id)
     print(f"Видео: {info['channel']} — {info['title']} [{video_id}]")
-    snippets = fetch_transcript(video_id, info, lang=lang)
+    snippets = fetch_transcript(video_id, info, lang=lang, use_asr=asr, asr_model=asr_model)
     if not snippets:
         print("[skip] Транскрипция недоступна (стрим без субтитров или субтитры отключены)")
         return {"video_id": video_id, "title": info["title"], "channel": info["channel"], "transcript_chunks": 0, "skipped": "no_transcript"}
@@ -427,6 +433,9 @@ def build_parser() -> argparse.ArgumentParser:
     yt.add_argument("url", help="URL или video_id")
     yt.add_argument("--collection", default=DEFAULT_COLLECTION)
     yt.add_argument("--lang", default="ru")
+    yt.add_argument("--asr", action="store_true",
+                    help="Если субтитров нет (ни ручных, ни авто) — распознать аудио локально через Whisper (GPU)")
+    yt.add_argument("--asr-model", default="large-v3", help="Модель faster-whisper для --asr")
     yt.add_argument("--cookies-from-browser", default=None,
                     help="Cookies для yt-dlp (обход бот-проверки): 'chrome', 'chrome:Profile 2', 'firefox'. Браузер закрыт.")
     yt.add_argument("--cookies-file", default=None, help="Альтернатива: путь к cookies.txt")
@@ -461,7 +470,7 @@ def main() -> None:
     elif args.command == "add-yt-transcript":
         from src.youtube import set_cookie_source
         set_cookie_source(args.cookies_from_browser, args.cookies_file)
-        add_yt_transcript(args.url, args.collection, args.lang)
+        add_yt_transcript(args.url, args.collection, args.lang, asr=args.asr, asr_model=args.asr_model)
     elif args.command == "delete-source":
         delete_source(args.collection, video_id=args.video, chat_id=args.chat, assume_yes=args.yes)
     elif args.command == "list":

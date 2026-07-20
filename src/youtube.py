@@ -61,6 +61,22 @@ def extract_video_id(url_or_id: str) -> str:
     raise ValueError(f"Не удалось извлечь video_id из: {url_or_id}")
 
 
+def is_playlist_url(url: str) -> bool:
+    """True — если ссылка на плейлист (list=...), а не на конкретное видео."""
+    return "list=" in url and "watch?v=" not in url
+
+
+def expand_playlist(url: str) -> list[str]:
+    """Разворачивает ссылку на плейлист в список video_id (без скачивания, flat-режим)."""
+    import yt_dlp
+
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True, **_cookie_opts()}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    entries = info.get("entries") or []
+    return [e["id"] for e in entries if e and e.get("id")]
+
+
 def _sanitize(name: str, max_len: int = 80) -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", name).strip().rstrip(".")
     name = re.sub(r"\s+", " ", name)
@@ -180,47 +196,151 @@ def _mark_subs_blocked() -> None:
     _subs_blocked = True
 
 
-def fetch_transcript(video_id: str, info: dict[str, Any], lang: str = "ru") -> list[dict[str, Any]] | None:
+def fetch_transcript(
+    video_id: str,
+    info: dict[str, Any],
+    lang: str = "ru",
+    use_asr: bool = False,
+    asr_model: str = "large-v3",
+) -> list[dict[str, Any]] | None:
     """Транскрипция: youtube-transcript-api (ручные + автосубтитры, фолбэк en),
-    запасной путь — yt-dlp --write-auto-subs (vtt). Кэш: transcript_<lang>.json.
+    запасной путь — yt-dlp --write-auto-subs (vtt), последний фолбэк (если use_asr) —
+    локальное распознавание аудио через Whisper (см. transcribe_with_whisper).
+    Кэш: transcript_<lang>.json.
 
     Возвращает список {text, start, duration} или None, если транскрипции нет.
     """
     d = video_dir(video_id, info["channel"], info["title"])
+    no_captions_cached = False
     for cached_lang in (lang, "en"):
         cache = d / f"transcript_{cached_lang}.json"
         if cache.exists():
             data = json.loads(cache.read_text(encoding="utf-8"))
-            return data if data else None
+            if data:
+                return data
+            no_captions_cached = True
 
-    # субтитровый эндпоинт уже забанил IP в этом прогоне — не долбим дальше, вернём None
-    # (пустышку не кэшируем, поэтому следующий запуск повторит эти видео)
-    if _subs_blocked:
-        print(f"[info] Пропускаю субтитры {video_id}: эндпоинт заблокирован ранее в этом прогоне (повтори позже)")
-        return None
-
-    # фолбэк-цепочка; при блоке на любом шаге дальнейшие каналы не пробуем (не греем лимит)
-    snippets, blocked = _transcript_via_api(video_id, lang)
+    snippets: list[dict[str, Any]] | None = None
     used_lang = lang
-    if snippets is None and not blocked:
-        snippets, blocked = _transcript_via_ytdlp(video_id, lang)
-    if snippets is None and not blocked and lang != "en":
-        s3, b3 = _transcript_via_api(video_id, "en")
-        blocked = b3
-        if s3 is not None:
-            snippets, used_lang = s3, "en"
 
-    # временный бот-блок/429/IpBlocked — НЕ кэшируем (следующий запуск повторит) и глушим
-    # субтитры до конца прогона. Пустой кэш ставим только при настоящем отсутствии (стрим, субтитры off).
-    if snippets is None and blocked:
-        _mark_subs_blocked()
-        print(f"[warn] Субтитры {video_id}: блокировка/лимит эндпоинта — не кэширую и отключаю "
-              f"дальнейшие попытки субтитров в этом прогоне (повтори позже)")
+    if no_captions_cached:
+        pass  # уже точно знаем, что субтитров нет — сразу к ASR (если запрошен)
+    elif _subs_blocked:
+        # субтитровый эндпоинт уже забанил IP в этом прогоне — не долбим дальше
+        # (пустышку не кэшируем, поэтому следующий запуск без ASR повторит эти видео)
+        print(f"[info] Пропускаю субтитры {video_id}: эндпоинт заблокирован ранее в этом прогоне (повтори позже)")
+    else:
+        # фолбэк-цепочка; при блоке на любом шаге дальнейшие каналы не пробуем (не греем лимит)
+        snippets, blocked = _transcript_via_api(video_id, lang)
+        if snippets is None and not blocked:
+            snippets, blocked = _transcript_via_ytdlp(video_id, lang)
+        if snippets is None and not blocked and lang != "en":
+            s3, b3 = _transcript_via_api(video_id, "en")
+            blocked = b3
+            if s3 is not None:
+                snippets, used_lang = s3, "en"
+
+        # временный бот-блок/429/IpBlocked — НЕ кэшируем (следующий запуск повторит) и глушим
+        # субтитры до конца прогона.
+        if snippets is None and blocked:
+            _mark_subs_blocked()
+            print(f"[warn] Субтитры {video_id}: блокировка/лимит эндпоинта — не кэширую и отключаю "
+                  f"дальнейшие попытки субтитров в этом прогоне (повтори позже)")
+            if not use_asr:
+                return None
+
+    if snippets is None and use_asr:
+        snippets = transcribe_with_whisper(video_id, lang=lang, model_size=asr_model)
+        if snippets is None:
+            print(f"[warn] ASR не дал результата для {video_id}, не кэширую (повтори позже)")
+            return None
+        used_lang = lang
+
+    if snippets is None:
+        # настоящее отсутствие субтитров (не блок, не ASR) — кэшируем пустышку
+        cache = d / f"transcript_{lang}.json"
+        cache.write_text("[]", encoding="utf-8")
         return None
 
-    cache = d / f"transcript_{used_lang if snippets else lang}.json"
-    cache.write_text(json.dumps(snippets or [], ensure_ascii=False), encoding="utf-8")
+    cache = d / f"transcript_{used_lang}.json"
+    cache.write_text(json.dumps(snippets, ensure_ascii=False), encoding="utf-8")
     return snippets
+
+
+_whisper_model = None
+_whisper_model_size = None
+
+
+def _get_whisper_model(model_size: str):
+    """Ленивая загрузка faster-whisper (переиспользуется между видео в одном прогоне)."""
+    global _whisper_model, _whisper_model_size
+    if _whisper_model is None or _whisper_model_size != model_size:
+        from faster_whisper import WhisperModel
+
+        try:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            device = "cpu"
+        compute_type = "float16" if device == "cuda" else "int8"
+        print(f"[info] Загрузка Whisper {model_size} ({device}/{compute_type})...")
+        _whisper_model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        _whisper_model_size = model_size
+    return _whisper_model
+
+
+def _download_audio(video_id: str) -> Path:
+    """Скачивает аудиодорожку видео во временную папку. Вызывающий обязан удалить папку."""
+    import tempfile
+
+    import yt_dlp
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"yt_audio_{video_id}_"))
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bestaudio/best",
+        "outtmpl": str(tmp_dir / "%(id)s.%(ext)s"),
+        "ignore_no_formats_error": True,
+        **_cookie_opts(),
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+    files = [f for f in tmp_dir.iterdir() if f.is_file()]
+    if not files:
+        raise RuntimeError(f"yt-dlp не скачал аудио для {video_id}")
+    return files[0]
+
+
+def transcribe_with_whisper(
+    video_id: str, lang: str = "ru", model_size: str = "large-v3"
+) -> list[dict[str, Any]] | None:
+    """ASR-фолбэк: скачивает аудио видео и распознаёт локально через faster-whisper (GPU).
+
+    Аудио удаляется сразу после распознавания (в кэше data/youtube/ не хранится).
+    Возвращает список {text, start, duration} или None при ошибке скачивания/распознавания.
+    """
+    import shutil
+
+    audio_path: Path | None = None
+    try:
+        print(f"[info] ASR: скачиваю аудио {video_id}...")
+        audio_path = _download_audio(video_id)
+        model = _get_whisper_model(model_size)
+        print(f"[info] ASR: распознаю {video_id} (whisper {model_size}, может занять время)...")
+        segments, _info = model.transcribe(str(audio_path), language=lang, vad_filter=True)
+        snippets = [
+            {"text": seg.text.strip(), "start": seg.start, "duration": seg.end - seg.start}
+            for seg in segments
+            if seg.text.strip()
+        ]
+        return snippets or None
+    except Exception as exc:
+        print(f"[warn] ASR не сработал для {video_id}: {exc}")
+        return None
+    finally:
+        if audio_path is not None:
+            shutil.rmtree(audio_path.parent, ignore_errors=True)
 
 
 # индикаторы временной блокировки/лимита (в отличие от настоящего отсутствия субтитров)
