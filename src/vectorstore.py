@@ -4,7 +4,7 @@ import hashlib
 import json
 import pickle
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import faiss
 import numpy as np
@@ -95,24 +95,18 @@ class VectorStore:
         self,
         query_vector: np.ndarray,
         k: int,
-        author: str | None = None,
-        source: str | None = None,
+        predicate: Callable[[dict[str, Any]], bool] | None = None,
     ) -> list[dict[str, Any]]:
+        """Поиск top-k по косинусу. `predicate` — фильтр по метаданным чанка
+        (собирается вызывающей стороной из любых полей docstore); None — без фильтра."""
         if self.index is None or self.index.ntotal == 0:
             return []
         total = self.index.ntotal
         qv = np.asarray([query_vector], dtype=np.float32)
 
-        def matches(meta: dict[str, Any]) -> bool:
-            if author is not None and (meta.get("author") or "").lower() != author.lower():
-                return False
-            if source is not None and meta.get("source", "tg") != source:
-                return False
-            return True
-
         # Итеративное углубление: при фильтрах top-k всего индекса может не содержать
         # нужный источник (например 79 чанков транскрипта среди 300k сообщений).
-        fetch_k = k if (author is None and source is None) else max(k * 20, 200)
+        fetch_k = k if predicate is None else max(k * 20, 200)
         while True:
             fetch_k = min(fetch_k, total)
             scores, ids = self.index.search(qv, fetch_k)  # type: ignore[call-arg]
@@ -121,7 +115,7 @@ class VectorStore:
                 if doc_id == -1:
                     continue
                 meta = self.docstore.get(int(doc_id))
-                if meta is None or not matches(meta):
+                if meta is None or (predicate is not None and not predicate(meta)):
                     continue
                 results.append({"score": float(score), **meta})
                 if len(results) >= k:
