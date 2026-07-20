@@ -8,7 +8,7 @@
 - **Три типа источников** в одной коллекции:
   - `tg` — сообщения из JSON-экспорта Telegram Desktop;
   - `yt_comments` — комментарии YouTube-видео (через yt-dlp, без API-ключа);
-  - `yt_transcript` — транскрипции видео, склеенные в чанки с таймкодами.
+  - `yt_transcript` — транскрипции видео (субтитры YouTube через yt-dlp, а при их отсутствии — локальное распознавание аудио через Whisper), склеенные в чанки с таймкодами.
 - **Контекст выдачи** — соседние сообщения / тред комментариев / соседние фрагменты транскрипции из локального SQLite.
 - **Идемпотентность** — повторный запуск индексации ничего не дублирует и работает как resume; выгрузки YouTube кэшируются в `data/youtube/` и повторно сеть не трогают.
 
@@ -70,10 +70,21 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m src.index add-yt-transcript "https://youtu.be/KjhI4vDfMdY" --collection mytopic --lang ru
 ```
 
-Пакетно — список ссылок в файле (по одной в строке, `#` — комментарий), удобно держать в `docs/`:
+Субтитры забираются через yt-dlp. Если у видео нет ни ручных, ни автоматических субтитров, добавьте `--asr` — аудио будет распознано локально через Whisper (`faster-whisper`, GPU):
+
+```powershell
+.\.venv\Scripts\python.exe -m src.index add-yt-transcript "https://youtu.be/KjhI4vDfMdY" --collection mytopic --lang ru --asr
+```
+
+- `--asr` качает аудио во временную папку и удаляет его сразу после распознавания (в кэше остаётся только готовый текст транскрипции).
+- `--asr-model` — модель распознавания (дефолт `large-v3`; полегче/побыстрее — `medium`, `distil-large-v3`).
+
+Пакетно — список ссылок в файле (по одной в строке, `#` — комментарий), удобно держать в `docs/`. Ссылка на плейлист (`youtube.com/playlist?list=...`) разворачивается во все видео плейлиста автоматически:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\ingest_videos.py docs\videos.md --collection mytopic
+# с локальной транскрипцией видео без субтитров:
+.\.venv\Scripts\python.exe scripts\ingest_videos.py docs\videos.md --collection mytopic --asr
 ```
 
 Сводная таблица выводится в конце, отчёт пишется в `logs/ingest_report.json`. Полный лог можно сохранить перенаправлением: `... | Tee-Object logs\ingest_log.txt`.

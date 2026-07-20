@@ -233,25 +233,26 @@ def fetch_transcript(
     use_asr: bool = False,
     asr_model: str = "large-v3",
 ) -> list[dict[str, Any]] | None:
-    """Транскрипция: youtube-transcript-api (ручные + автосубтитры, фолбэк en),
-    запасной путь — yt-dlp --write-auto-subs (vtt), последний фолбэк (если use_asr) —
-    локальное распознавание аудио через Whisper (см. transcribe_with_whisper).
-    Кэш: transcript_<lang>.json.
+    """Транскрипция единственным способом — yt-dlp (--write-subs + --write-auto-subs, vtt);
+    если субтитров нет и use_asr=True — локальное распознавание аудио через Whisper
+    (см. transcribe_with_whisper). Кэш: transcript_<lang>.json.
+
+    Один сетевой запрос субтитров на видео: несколько параллельных способов забора
+    (youtube-transcript-api + en-фолбэк) убраны — они множили запросы и провоцировали
+    IP-бан YouTube. Комментарии и так тянутся через yt-dlp, субтитры теперь тоже.
 
     Возвращает список {text, start, duration} или None, если транскрипции нет.
     """
     d = video_dir(video_id, info["channel"], info["title"])
+    cache = d / f"transcript_{lang}.json"
     no_captions_cached = False
-    for cached_lang in (lang, "en"):
-        cache = d / f"transcript_{cached_lang}.json"
-        if cache.exists():
-            data = json.loads(cache.read_text(encoding="utf-8"))
-            if data:
-                return data
-            no_captions_cached = True
+    if cache.exists():
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        if data:
+            return data
+        no_captions_cached = True
 
     snippets: list[dict[str, Any]] | None = None
-    used_lang = lang
 
     if no_captions_cached:
         pass  # уже точно знаем, что субтитров нет — сразу к ASR (если запрошен)
@@ -262,16 +263,7 @@ def fetch_transcript(
             f"[info] Пропускаю субтитры {video_id}: эндпоинт заблокирован ранее в этом прогоне (повтори позже)"
         )
     else:
-        # фолбэк-цепочка; при блоке на любом шаге дальнейшие каналы не пробуем (не греем лимит)
-        snippets, blocked = _transcript_via_api(video_id, lang)
-        if snippets is None and not blocked:
-            snippets, blocked = _transcript_via_ytdlp(video_id, lang)
-        if snippets is None and not blocked and lang != "en":
-            s3, b3 = _transcript_via_api(video_id, "en")
-            blocked = b3
-            if s3 is not None:
-                snippets, used_lang = s3, "en"
-
+        snippets, blocked = _transcript_via_ytdlp(video_id, lang)
         # временный бот-блок/429/IpBlocked — НЕ кэшируем (следующий запуск повторит) и глушим
         # субтитры до конца прогона.
         if snippets is None and blocked:
@@ -290,15 +282,12 @@ def fetch_transcript(
                 f"[warn] ASR не дал результата для {video_id}, не кэширую (повтори позже)"
             )
             return None
-        used_lang = lang
 
     if snippets is None:
         # настоящее отсутствие субтитров (не блок, не ASR) — кэшируем пустышку
-        cache = d / f"transcript_{lang}.json"
         cache.write_text("[]", encoding="utf-8")
         return None
 
-    cache = d / f"transcript_{used_lang}.json"
     cache.write_text(json.dumps(snippets, ensure_ascii=False), encoding="utf-8")
     return snippets
 
@@ -413,25 +402,6 @@ def _is_transient_block(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return any(n in msg for n in _BLOCK_NEEDLES)
-
-
-def _transcript_via_api(
-    video_id: str, lang: str
-) -> tuple[list[dict[str, Any]] | None, bool]:
-    """Возвращает (сниппеты|None, blocked). blocked=True — временная блокировка/лимит."""
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-
-        api = YouTubeTranscriptApi()
-        fetched = api.fetch(video_id, languages=[lang])
-        return [
-            {"text": s.text, "start": s.start, "duration": s.duration} for s in fetched
-        ], False
-    except Exception as exc:
-        print(
-            f"[info] youtube-transcript-api ({lang}) не сработал для {video_id}: {type(exc).__name__}"
-        )
-        return None, _is_transient_block(exc)
 
 
 def _transcript_via_ytdlp(
