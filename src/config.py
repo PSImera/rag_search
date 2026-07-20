@@ -47,7 +47,7 @@ DEFAULT_MIN_CHARS = 20
 MAX_CHUNK_CHARS = 800
 
 # Дефолтная коллекция.
-DEFAULT_COLLECTION = "default"
+DEFAULT_COLLECTION = "scientism"
 
 # Дефолтный шаблон ссылки на сообщение.
 DEFAULT_LINK_TEMPLATE = "https://t.me/c/{chat_id}/{message_id}"
