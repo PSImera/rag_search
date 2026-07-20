@@ -54,22 +54,30 @@ def _print_result(store: VectorStore, i: int, r: dict, context: int) -> None:
                 if items:
                     print(f"  --- {label} ---")
                     for c in items:
-                        print(f"    [{_mmss(c['start_sec'])}–{_mmss(c['end_sec'])}] {c['text']}")
+                        print(
+                            f"    [{_mmss(c['start_sec'])}–{_mmss(c['end_sec'])}] {c['text']}"
+                        )
         return
     if src == "yt_comments":
         print(f"Видео: {r.get('channel','')} — {r.get('video_title','')}")
-        print(f"Автор: {r.get('author','')}   Дата: {r.get('date','')}   Лайков: {r.get('likes',0)}")
+        print(
+            f"Автор: {r.get('author','')}   Дата: {r.get('date','')}   Лайков: {r.get('likes',0)}"
+        )
         print(f"Текст: {r.get('text','')}")
         print(f"Ссылка: {r.get('link','')}")
         if context > 0:
             ctx = _get_context(store, r, context)
             if ctx.get("parent"):
                 p = ctx["parent"]
-                print(f"  --- родительский ---\n    [{p.get('date','')}] {p.get('author','')}: {p.get('text','')}")
+                print(
+                    f"  --- родительский ---\n    [{p.get('date','')}] {p.get('author','')}: {p.get('text','')}"
+                )
             if ctx.get("replies"):
                 print("  --- тред ---")
                 for c in ctx["replies"]:
-                    print(f"    [{c.get('date','')}] {c.get('author','')}: {c.get('text','')}")
+                    print(
+                        f"    [{c.get('date','')}] {c.get('author','')}: {c.get('text','')}"
+                    )
         return
     # tg
     print(f"Чат: {r.get('chat_name','')}")
@@ -118,10 +126,14 @@ def build_predicate(
         preds.append(lambda m: (m.get("source") or "tg") == source)
     if chat is not None:
         c = _norm(chat)
-        preds.append(lambda m: _norm(m.get("chat_id")) == c or c in _norm(m.get("chat_name")))
+        preds.append(
+            lambda m: _norm(m.get("chat_id")) == c or c in _norm(m.get("chat_name"))
+        )
     if video is not None:
         v = _norm(video)
-        preds.append(lambda m: _norm(m.get("video_id")) == v or v in _norm(m.get("video_title")))
+        preds.append(
+            lambda m: _norm(m.get("video_id")) == v or v in _norm(m.get("video_title"))
+        )
     if channel is not None:
         ch = _norm(channel)
         preds.append(lambda m: ch in _norm(m.get("channel")))
@@ -136,7 +148,9 @@ def build_predicate(
             key_n, val_n = key.strip(), _norm(val)
             preds.append(lambda m, k=key_n, x=val_n: _norm(m.get(k)) == x)
         else:
-            raise ValueError(f"Некорректный --filter {raw!r}: ожидается 'поле=значение' или 'поле~подстрока'")
+            raise ValueError(
+                f"Некорректный --filter {raw!r}: ожидается 'поле=значение' или 'поле~подстрока'"
+            )
 
     if not preds:
         return None
@@ -160,8 +174,12 @@ def run_search(
     store = VectorStore(collection, dim=emb.dim)
     qvec = emb.embed_query(query)
     predicate = build_predicate(
-        author=author, source=source, chat=chat,
-        video=video, channel=channel, filters=filters,
+        author=author,
+        source=source,
+        chat=chat,
+        video=video,
+        channel=channel,
+        filters=filters,
     )
     results = store.search(qvec, k=k, predicate=predicate)
 
@@ -176,13 +194,15 @@ def run_search(
         store.close()
         return
 
-    print(f"Запрос: {query!r} | коллекция={collection} | k={k}"
-          + (f" | author={author}" if author else "")
-          + (f" | source={source}" if source else "")
-          + (f" | chat={chat}" if chat else "")
-          + (f" | video={video}" if video else "")
-          + (f" | channel={channel}" if channel else "")
-          + (f" | filter={filters}" if filters else ""))
+    print(
+        f"Запрос: {query!r} | коллекция={collection} | k={k}"
+        + (f" | author={author}" if author else "")
+        + (f" | source={source}" if source else "")
+        + (f" | chat={chat}" if chat else "")
+        + (f" | video={video}" if video else "")
+        + (f" | channel={channel}" if channel else "")
+        + (f" | filter={filters}" if filters else "")
+    )
     print("=" * 70)
     for i, r in enumerate(results, 1):
         _print_result(store, i, r, context)
@@ -192,23 +212,47 @@ def run_search(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Семантический поиск по коллекции (Telegram + YouTube)")
+    p = argparse.ArgumentParser(
+        description="Семантический поиск по коллекции (Telegram + YouTube)"
+    )
     p.add_argument("query", help="Поисковый запрос")
     p.add_argument("-k", type=int, default=5, help="Сколько результатов вернуть")
     p.add_argument("--collection", default=DEFAULT_COLLECTION)
-    p.add_argument("--author", default=None, help="Фильтр по автору (точное совпадение имени)")
-    p.add_argument("--context", type=int, default=0, help="M соседних сообщений/чанков до и после")
-    p.add_argument("--source", default=None, choices=["tg", "yt_comments", "yt_transcript"],
-                   help="Фильтр по типу источника")
-    p.add_argument("--chat", default=None,
-                   help="Только этот ТГ-чат: точный chat_id или подстрока названия (ci)")
-    p.add_argument("--video", default=None,
-                   help="Только это YouTube-видео: точный video_id или подстрока названия (ci)")
-    p.add_argument("--channel", default=None,
-                   help="Только этот YouTube-канал: подстрока названия канала (ci)")
-    p.add_argument("--filter", dest="filters", action="append", metavar="ПОЛЕ=ЗНАЧ",
-                   help="Универсальный фильтр по любому полю метаданных: 'поле=значение' "
-                        "(точно) или 'поле~подстрока' (вхождение). Можно повторять.")
+    p.add_argument(
+        "--author", default=None, help="Фильтр по автору (точное совпадение имени)"
+    )
+    p.add_argument(
+        "--context", type=int, default=0, help="M соседних сообщений/чанков до и после"
+    )
+    p.add_argument(
+        "--source",
+        default=None,
+        choices=["tg", "yt_comments", "yt_transcript"],
+        help="Фильтр по типу источника",
+    )
+    p.add_argument(
+        "--chat",
+        default=None,
+        help="Только этот ТГ-чат: точный chat_id или подстрока названия (ci)",
+    )
+    p.add_argument(
+        "--video",
+        default=None,
+        help="Только это YouTube-видео: точный video_id или подстрока названия (ci)",
+    )
+    p.add_argument(
+        "--channel",
+        default=None,
+        help="Только этот YouTube-канал: подстрока названия канала (ci)",
+    )
+    p.add_argument(
+        "--filter",
+        dest="filters",
+        action="append",
+        metavar="ПОЛЕ=ЗНАЧ",
+        help="Универсальный фильтр по любому полю метаданных: 'поле=значение' "
+        "(точно) или 'поле~подстрока' (вхождение). Можно повторять.",
+    )
     p.add_argument("--json", action="store_true", help="Вывод в JSON")
     return p
 

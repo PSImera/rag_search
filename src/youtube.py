@@ -12,7 +12,9 @@ from src.config import YOUTUBE_ROOT
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
-def set_cookie_source(from_browser: str | None = None, cookie_file: str | None = None) -> None:
+def set_cookie_source(
+    from_browser: str | None = None, cookie_file: str | None = None
+) -> None:
     """Задаёт источник cookies для yt-dlp (обход бот-проверки YouTube).
 
     Точки входа зовут это из своих CLI-флагов; значения кладутся в env, чтобы их
@@ -33,7 +35,12 @@ def _parse_browser_spec(spec: str) -> tuple[str, str | None, str | None, str | N
     rest, _, container = spec.partition("::")
     head, _, profile = rest.partition(":")
     browser, _, keyring = head.partition("+")
-    return (browser.strip().lower(), profile.strip() or None, keyring.strip() or None, container.strip() or None)
+    return (
+        browser.strip().lower(),
+        profile.strip() or None,
+        keyring.strip() or None,
+        container.strip() or None,
+    )
 
 
 def _cookie_opts() -> dict[str, Any]:
@@ -55,7 +62,10 @@ def extract_video_id(url_or_id: str) -> str:
     s = url_or_id.strip()
     if _ID_RE.match(s):
         return s
-    m = re.search(r"(?:youtu\.be/|youtube\.com/(?:watch\?v=|live/|shorts/|embed/))([A-Za-z0-9_-]{11})", s)
+    m = re.search(
+        r"(?:youtu\.be/|youtube\.com/(?:watch\?v=|live/|shorts/|embed/))([A-Za-z0-9_-]{11})",
+        s,
+    )
     if m:
         return m.group(1)
     raise ValueError(f"Не удалось извлечь video_id из: {url_or_id}")
@@ -70,7 +80,13 @@ def expand_playlist(url: str) -> list[str]:
     """Разворачивает ссылку на плейлист в список video_id (без скачивания, flat-режим)."""
     import yt_dlp
 
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True, **_cookie_opts()}
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "skip_download": True,
+        **_cookie_opts(),
+    }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     entries = info.get("entries") or []
@@ -109,11 +125,19 @@ def fetch_video_info(video_id: str) -> dict[str, Any]:
 
     import yt_dlp
 
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, "extract_flat": False, **_cookie_opts()}
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": False,
+        **_cookie_opts(),
+    }
     with yt_dlp.YoutubeDL(opts) as ydl:
         # process=False — берём только метаданные, без разбора форматов видео (нам они не нужны;
         # на части видео резолв формата падает «Requested format is not available»)
-        info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False, process=False)
+        info = ydl.extract_info(
+            f"https://www.youtube.com/watch?v={video_id}", download=False, process=False
+        )
     slim = {
         "video_id": video_id,
         "title": info.get("title") or "",
@@ -123,7 +147,9 @@ def fetch_video_info(video_id: str) -> dict[str, Any]:
         "was_live": bool(info.get("was_live")),
     }
     d = video_dir(video_id, slim["channel"], slim["title"])
-    (d / "info.json").write_text(json.dumps(slim, ensure_ascii=False, indent=2), encoding="utf-8")
+    (d / "info.json").write_text(
+        json.dumps(slim, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     return slim
 
 
@@ -151,12 +177,16 @@ def fetch_comments(video_id: str, info: dict[str, Any]) -> list[dict[str, Any]]:
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            raw = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            raw = ydl.extract_info(
+                f"https://www.youtube.com/watch?v={video_id}", download=False
+            )
         comments = raw.get("comments") or []
     except Exception as exc:
         # обрыв/бот-блок/лимит — НЕ кэшируем пустой результат, иначе cache-hit навсегда
         # закроет видео от повторной попытки; следующий запуск попробует снова
-        print(f"[warn] Комментарии для {video_id} недоступны (не кэширую, повтори позже): {exc}")
+        print(
+            f"[warn] Комментарии для {video_id} недоступны (не кэширую, повтори позже): {exc}"
+        )
         return []
 
     normalized: list[dict[str, Any]] = []
@@ -228,7 +258,9 @@ def fetch_transcript(
     elif _subs_blocked:
         # субтитровый эндпоинт уже забанил IP в этом прогоне — не долбим дальше
         # (пустышку не кэшируем, поэтому следующий запуск без ASR повторит эти видео)
-        print(f"[info] Пропускаю субтитры {video_id}: эндпоинт заблокирован ранее в этом прогоне (повтори позже)")
+        print(
+            f"[info] Пропускаю субтитры {video_id}: эндпоинт заблокирован ранее в этом прогоне (повтори позже)"
+        )
     else:
         # фолбэк-цепочка; при блоке на любом шаге дальнейшие каналы не пробуем (не греем лимит)
         snippets, blocked = _transcript_via_api(video_id, lang)
@@ -244,15 +276,19 @@ def fetch_transcript(
         # субтитры до конца прогона.
         if snippets is None and blocked:
             _mark_subs_blocked()
-            print(f"[warn] Субтитры {video_id}: блокировка/лимит эндпоинта — не кэширую и отключаю "
-                  f"дальнейшие попытки субтитров в этом прогоне (повтори позже)")
+            print(
+                f"[warn] Субтитры {video_id}: блокировка/лимит эндпоинта — не кэширую и отключаю "
+                f"дальнейшие попытки субтитров в этом прогоне (повтори позже)"
+            )
             if not use_asr:
                 return None
 
     if snippets is None and use_asr:
         snippets = transcribe_with_whisper(video_id, lang=lang, model_size=asr_model)
         if snippets is None:
-            print(f"[warn] ASR не дал результата для {video_id}, не кэширую (повтори позже)")
+            print(
+                f"[warn] ASR не дал результата для {video_id}, не кэширую (повтори позже)"
+            )
             return None
         used_lang = lang
 
@@ -279,12 +315,15 @@ def _get_whisper_model(model_size: str):
 
         try:
             import torch
+
             device = "cuda" if torch.cuda.is_available() else "cpu"
         except Exception:
             device = "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
         print(f"[info] Загрузка Whisper {model_size} ({device}/{compute_type})...")
-        _whisper_model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        _whisper_model = WhisperModel(
+            model_size, device=device, compute_type=compute_type
+        )
         _whisper_model_size = model_size
     return _whisper_model
 
@@ -327,10 +366,18 @@ def transcribe_with_whisper(
         print(f"[info] ASR: скачиваю аудио {video_id}...")
         audio_path = _download_audio(video_id)
         model = _get_whisper_model(model_size)
-        print(f"[info] ASR: распознаю {video_id} (whisper {model_size}, может занять время)...")
-        segments, _info = model.transcribe(str(audio_path), language=lang, vad_filter=True)
+        print(
+            f"[info] ASR: распознаю {video_id} (whisper {model_size}, может занять время)..."
+        )
+        segments, _info = model.transcribe(
+            str(audio_path), language=lang, vad_filter=True
+        )
         snippets = [
-            {"text": seg.text.strip(), "start": seg.start, "duration": seg.end - seg.start}
+            {
+                "text": seg.text.strip(),
+                "start": seg.start,
+                "duration": seg.end - seg.start,
+            }
             for seg in segments
             if seg.text.strip()
         ]
@@ -344,8 +391,20 @@ def transcribe_with_whisper(
 
 
 # индикаторы временной блокировки/лимита (в отличие от настоящего отсутствия субтитров)
-_BLOCK_EXC_NAMES = {"IpBlocked", "RequestBlocked", "TooManyRequests", "YouTubeRequestFailed"}
-_BLOCK_NEEDLES = ("429", "too many requests", "sign in to confirm", "not a bot", "ipblocked", "rate limit")
+_BLOCK_EXC_NAMES = {
+    "IpBlocked",
+    "RequestBlocked",
+    "TooManyRequests",
+    "YouTubeRequestFailed",
+}
+_BLOCK_NEEDLES = (
+    "429",
+    "too many requests",
+    "sign in to confirm",
+    "not a bot",
+    "ipblocked",
+    "rate limit",
+)
 
 
 def _is_transient_block(exc: Exception) -> bool:
@@ -356,20 +415,28 @@ def _is_transient_block(exc: Exception) -> bool:
     return any(n in msg for n in _BLOCK_NEEDLES)
 
 
-def _transcript_via_api(video_id: str, lang: str) -> tuple[list[dict[str, Any]] | None, bool]:
+def _transcript_via_api(
+    video_id: str, lang: str
+) -> tuple[list[dict[str, Any]] | None, bool]:
     """Возвращает (сниппеты|None, blocked). blocked=True — временная блокировка/лимит."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
 
         api = YouTubeTranscriptApi()
         fetched = api.fetch(video_id, languages=[lang])
-        return [{"text": s.text, "start": s.start, "duration": s.duration} for s in fetched], False
+        return [
+            {"text": s.text, "start": s.start, "duration": s.duration} for s in fetched
+        ], False
     except Exception as exc:
-        print(f"[info] youtube-transcript-api ({lang}) не сработал для {video_id}: {type(exc).__name__}")
+        print(
+            f"[info] youtube-transcript-api ({lang}) не сработал для {video_id}: {type(exc).__name__}"
+        )
         return None, _is_transient_block(exc)
 
 
-def _transcript_via_ytdlp(video_id: str, lang: str) -> tuple[list[dict[str, Any]] | None, bool]:
+def _transcript_via_ytdlp(
+    video_id: str, lang: str
+) -> tuple[list[dict[str, Any]] | None, bool]:
     """Фолбэк: yt-dlp скачивает автосубтитры vtt, парсим их. Возвращает (сниппеты|None, blocked)."""
     import tempfile
 
@@ -392,7 +459,9 @@ def _transcript_via_ytdlp(video_id: str, lang: str) -> tuple[list[dict[str, Any]
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
         except Exception as exc:
-            print(f"[info] yt-dlp субтитры не сработали для {video_id}: {type(exc).__name__}")
+            print(
+                f"[info] yt-dlp субтитры не сработали для {video_id}: {type(exc).__name__}"
+            )
             return None, _is_transient_block(exc)
         vtts = sorted(Path(tmp).glob("*.vtt"))
         if not vtts:
@@ -400,7 +469,9 @@ def _transcript_via_ytdlp(video_id: str, lang: str) -> tuple[list[dict[str, Any]
         return parse_vtt(vtts[0].read_text(encoding="utf-8")), False
 
 
-_TS_RE = re.compile(r"(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})")
+_TS_RE = re.compile(
+    r"(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})"
+)
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -415,7 +486,13 @@ def parse_vtt(vtt: str) -> list[dict[str, Any]]:
         if cur_start is not None and cur_lines:
             text = " ".join(cur_lines).strip()
             if text:
-                snippets.append({"text": text, "start": cur_start, "duration": max(cur_end - cur_start, 0.0)})
+                snippets.append(
+                    {
+                        "text": text,
+                        "start": cur_start,
+                        "duration": max(cur_end - cur_start, 0.0),
+                    }
+                )
         cur_start = cur_end = None
         cur_lines = []
 
@@ -428,7 +505,11 @@ def parse_vtt(vtt: str) -> list[dict[str, Any]]:
             cur_end = h2 * 3600 + m2 * 60 + s2 + ms2 / 1000
             continue
         line = _TAG_RE.sub("", line).strip()
-        if not line or line == "WEBVTT" or line.startswith(("Kind:", "Language:", "NOTE")):
+        if (
+            not line
+            or line == "WEBVTT"
+            or line.startswith(("Kind:", "Language:", "NOTE"))
+        ):
             continue
         if cur_start is not None:
             cur_lines.append(line)
@@ -440,8 +521,12 @@ def parse_vtt(vtt: str) -> list[dict[str, Any]]:
         if deduped and s["text"] == deduped[-1]["text"]:
             deduped[-1]["duration"] = s["start"] + s["duration"] - deduped[-1]["start"]
             continue
-        if deduped and deduped[-1]["text"] and s["text"].startswith(deduped[-1]["text"]):
-            tail = s["text"][len(deduped[-1]["text"]):].strip()
+        if (
+            deduped
+            and deduped[-1]["text"]
+            and s["text"].startswith(deduped[-1]["text"])
+        ):
+            tail = s["text"][len(deduped[-1]["text"]) :].strip()
             if tail:
                 s = {**s, "text": tail}
             else:
@@ -453,7 +538,9 @@ def parse_vtt(vtt: str) -> list[dict[str, Any]]:
 _SENT_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 
 
-def split_long_text(text: str, max_chars: int, target_chars: int | None = None) -> list[str]:
+def split_long_text(
+    text: str, max_chars: int, target_chars: int | None = None
+) -> list[str]:
     """Режет длинный текст на части не длиннее max_chars по границам предложений.
 
     Короткий текст (<= max_chars) возвращается одним элементом — id таких чанков не
@@ -511,7 +598,13 @@ def chunk_transcript(
         text = " ".join(buf).strip()
         text = re.sub(r"\s+", " ", text)
         if text and buf_start is not None:
-            chunks.append({"text": text, "start_sec": int(buf_start), "end_sec": int(round(buf_end))})
+            chunks.append(
+                {
+                    "text": text,
+                    "start_sec": int(buf_start),
+                    "end_sec": int(round(buf_end)),
+                }
+            )
         buf = []
         buf_start = None
 
@@ -526,7 +619,11 @@ def chunk_transcript(
         if buf_start is None:
             buf_start = start
         # пауза между репликами
-        if buf and start - buf_end > pause_break and sum(len(x) for x in buf) >= target_chars * 0.5:
+        if (
+            buf
+            and start - buf_end > pause_break
+            and sum(len(x) for x in buf) >= target_chars * 0.5
+        ):
             flush()
             buf_start = start
         buf.append(text)

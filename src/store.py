@@ -19,8 +19,7 @@ class RawStore:
         self._init_schema()
 
     def _init_schema(self) -> None:
-        self.conn.execute(
-            """
+        self.conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 chat_id     TEXT NOT NULL,
                 message_id  INTEGER NOT NULL,
@@ -32,10 +31,8 @@ class RawStore:
                 link        TEXT,
                 PRIMARY KEY (chat_id, message_id)
             )
-            """
-        )
-        self.conn.execute(
-            """
+            """)
+        self.conn.execute("""
             CREATE TABLE IF NOT EXISTS yt_comments (
                 video_id    TEXT NOT NULL,
                 comment_id  TEXT NOT NULL,
@@ -48,10 +45,8 @@ class RawStore:
                 link        TEXT,
                 PRIMARY KEY (video_id, comment_id)
             )
-            """
-        )
-        self.conn.execute(
-            """
+            """)
+        self.conn.execute("""
             CREATE TABLE IF NOT EXISTS yt_chunks (
                 video_id    TEXT NOT NULL,
                 start_sec   INTEGER NOT NULL,
@@ -63,8 +58,7 @@ class RawStore:
                 lang        TEXT,
                 PRIMARY KEY (video_id, start_sec)
             )
-            """
-        )
+            """)
         self.conn.commit()
 
     def upsert_many(self, rows: Iterable[dict[str, Any]]) -> None:
@@ -80,7 +74,9 @@ class RawStore:
         )
         self.conn.commit()
 
-    def get_context(self, chat_id: str, message_id: int, m: int) -> dict[str, list[dict[str, Any]]]:
+    def get_context(
+        self, chat_id: str, message_id: int, m: int
+    ) -> dict[str, list[dict[str, Any]]]:
         """Возвращает до m сообщений до и после указанного (по message_id) в том же чате."""
         before = self.conn.execute(
             """
@@ -98,7 +94,16 @@ class RawStore:
             """,
             (chat_id, message_id, m),
         ).fetchall()
-        cols = ["chat_id", "message_id", "author", "author_id", "date", "reply_to", "text", "link"]
+        cols = [
+            "chat_id",
+            "message_id",
+            "author",
+            "author_id",
+            "date",
+            "reply_to",
+            "text",
+            "link",
+        ]
         to_dicts = lambda rows: [dict(zip(cols, r)) for r in rows]
         return {"before": list(reversed(to_dicts(before))), "after": to_dicts(after)}
 
@@ -112,7 +117,16 @@ class RawStore:
         ).fetchone()
         if row is None:
             return None
-        cols = ["chat_id", "message_id", "author", "author_id", "date", "reply_to", "text", "link"]
+        cols = [
+            "chat_id",
+            "message_id",
+            "author",
+            "author_id",
+            "date",
+            "reply_to",
+            "text",
+            "link",
+        ]
         return dict(zip(cols, row))
 
     def count(self) -> int:
@@ -133,9 +147,21 @@ class RawStore:
         )
         self.conn.commit()
 
-    def get_comment_thread(self, video_id: str, comment_id: str, m: int) -> dict[str, Any]:
+    def get_comment_thread(
+        self, video_id: str, comment_id: str, m: int
+    ) -> dict[str, Any]:
         """Контекст комментария: родитель + до m ответов того же треда."""
-        cols = ["video_id", "comment_id", "parent_id", "author", "author_id", "date", "likes", "text", "link"]
+        cols = [
+            "video_id",
+            "comment_id",
+            "parent_id",
+            "author",
+            "author_id",
+            "date",
+            "likes",
+            "text",
+            "link",
+        ]
         q = "SELECT video_id, comment_id, parent_id, author, author_id, date, likes, text, link FROM yt_comments WHERE video_id=? AND comment_id=?"
 
         row = self.conn.execute(q, (video_id, comment_id)).fetchone()
@@ -171,9 +197,20 @@ class RawStore:
         )
         self.conn.commit()
 
-    def get_chunk_context(self, video_id: str, start_sec: int, m: int) -> dict[str, list[dict[str, Any]]]:
+    def get_chunk_context(
+        self, video_id: str, start_sec: int, m: int
+    ) -> dict[str, list[dict[str, Any]]]:
         """Соседние чанки транскрипции по времени."""
-        cols = ["video_id", "start_sec", "end_sec", "text", "link", "video_title", "channel", "lang"]
+        cols = [
+            "video_id",
+            "start_sec",
+            "end_sec",
+            "text",
+            "link",
+            "video_title",
+            "channel",
+            "lang",
+        ]
         before = self.conn.execute(
             """
             SELECT video_id, start_sec, end_sec, text, link, video_title, channel, lang
@@ -195,31 +232,47 @@ class RawStore:
 
     def delete_chat(self, chat_id: str) -> int:
         """Удаляет все сырые сообщения чата. Возвращает число удалённых строк."""
-        n = self.conn.execute("DELETE FROM messages WHERE chat_id=?", (str(chat_id),)).rowcount
+        n = self.conn.execute(
+            "DELETE FROM messages WHERE chat_id=?", (str(chat_id),)
+        ).rowcount
         self.conn.commit()
         return n
 
     def delete_video(self, video_id: str) -> tuple[int, int]:
         """Удаляет сырые комментарии и чанки транскрипции видео. Возвращает (комментов, чанков)."""
-        c = self.conn.execute("DELETE FROM yt_comments WHERE video_id=?", (str(video_id),)).rowcount
-        ch = self.conn.execute("DELETE FROM yt_chunks WHERE video_id=?", (str(video_id),)).rowcount
+        c = self.conn.execute(
+            "DELETE FROM yt_comments WHERE video_id=?", (str(video_id),)
+        ).rowcount
+        ch = self.conn.execute(
+            "DELETE FROM yt_chunks WHERE video_id=?", (str(video_id),)
+        ).rowcount
         self.conn.commit()
         return c, ch
 
     def stats(self) -> dict[str, Any]:
         """Статистика по источникам для index list."""
         out: dict[str, Any] = {}
-        out["tg_messages"] = self.conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        out["tg_messages"] = self.conn.execute(
+            "SELECT COUNT(*) FROM messages"
+        ).fetchone()[0]
         out["tg_chats"] = [
             {"chat_id": r[0], "messages": r[1]}
-            for r in self.conn.execute("SELECT chat_id, COUNT(*) FROM messages GROUP BY chat_id").fetchall()
+            for r in self.conn.execute(
+                "SELECT chat_id, COUNT(*) FROM messages GROUP BY chat_id"
+            ).fetchall()
         ]
-        out["yt_comments"] = self.conn.execute("SELECT COUNT(*) FROM yt_comments").fetchone()[0]
+        out["yt_comments"] = self.conn.execute(
+            "SELECT COUNT(*) FROM yt_comments"
+        ).fetchone()[0]
         out["yt_videos_comments"] = [
             {"video_id": r[0], "comments": r[1]}
-            for r in self.conn.execute("SELECT video_id, COUNT(*) FROM yt_comments GROUP BY video_id").fetchall()
+            for r in self.conn.execute(
+                "SELECT video_id, COUNT(*) FROM yt_comments GROUP BY video_id"
+            ).fetchall()
         ]
-        out["yt_chunks"] = self.conn.execute("SELECT COUNT(*) FROM yt_chunks").fetchone()[0]
+        out["yt_chunks"] = self.conn.execute(
+            "SELECT COUNT(*) FROM yt_chunks"
+        ).fetchone()[0]
         out["yt_videos_chunks"] = [
             {"video_id": r[0], "title": r[2], "chunks": r[1]}
             for r in self.conn.execute(

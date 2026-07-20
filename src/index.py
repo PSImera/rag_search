@@ -45,7 +45,9 @@ def add_chat(
     chat_name = header.get("name") or ""
     chat_id_str = str(chat_id)
     print(f"Чат: {chat_name} (id={chat_id}, type={header.get('type')})")
-    print(f"Коллекция: {collection} | min-chars={min_chars} | link-template={link_template}")
+    print(
+        f"Коллекция: {collection} | min-chars={min_chars} | link-template={link_template}"
+    )
 
     from src.youtube import split_long_text
 
@@ -72,7 +74,9 @@ def add_chat(
         if not batch:
             return
         vectors = emb.embed_passages([text for _, text, _ in batch])
-        store.add_batch([cid for cid, _, _ in batch], vectors, [meta for _, _, meta in batch])
+        store.add_batch(
+            [cid for cid, _, _ in batch], vectors, [meta for _, _, meta in batch]
+        )
         embedded += len(batch)
 
     progress = tqdm(iter_messages(json_path), desc="Сообщения", unit="msg")
@@ -101,24 +105,32 @@ def add_chat(
         # (yt-аналогично: chat_id:message_id) — идемпотентность старой индексации цела.
         pieces = split_long_text(msg["text"], MAX_CHUNK_CHARS)
         for idx, piece in enumerate(pieces):
-            key = msg["message_id"] if len(pieces) == 1 else f"{msg['message_id']}#{idx}"
+            key = (
+                msg["message_id"] if len(pieces) == 1 else f"{msg['message_id']}#{idx}"
+            )
             cid = chunk_id(chat_id, key)
             if cid in already:
                 skipped_existing += 1
                 continue
             already.add(cid)  # защита от дублей внутри прохода
-            pending.append((cid, piece, {
-                "source": "tg",
-                "text": piece,
-                "author": msg["author"],
-                "author_id": msg["author_id"],
-                "date": msg["date"],
-                "message_id": msg["message_id"],
-                "chat_id": chat_id_str,
-                "chat_name": chat_name,
-                "reply_to_message_id": msg["reply_to_message_id"],
-                "link": link,
-            }))
+            pending.append(
+                (
+                    cid,
+                    piece,
+                    {
+                        "source": "tg",
+                        "text": piece,
+                        "author": msg["author"],
+                        "author_id": msg["author_id"],
+                        "date": msg["date"],
+                        "message_id": msg["message_id"],
+                        "chat_id": chat_id_str,
+                        "chat_name": chat_name,
+                        "reply_to_message_id": msg["reply_to_message_id"],
+                        "link": link,
+                    },
+                )
+            )
         if len(pending) >= batch_size:
             flush_embed(pending)
             pending = []
@@ -145,7 +157,9 @@ def add_chat(
     print(f"Время: {elapsed/60:.1f} мин ({elapsed:.0f} сек)")
 
 
-def yt_comment_chunks(video_id: str, info: dict, comments: list[dict], min_chars: int) -> tuple[list[dict], list[Chunk]]:
+def yt_comment_chunks(
+    video_id: str, info: dict, comments: list[dict], min_chars: int
+) -> tuple[list[dict], list[Chunk]]:
     """Комментарии -> (raw_rows для SQLite, чанки на эмбеддинг). Без сети и без модели.
 
     Длинные комментарии дробятся на несколько чанков (см. MAX_CHUNK_CHARS). Комментарий,
@@ -209,17 +223,23 @@ def embed_pending(
     при повторном запуске уже сохранённые чанки отфильтруются через existing_ids.
     """
     embedded = 0
-    for bi, i in enumerate(tqdm(range(0, len(pending), EMBED_BATCH_SIZE), desc=desc, unit="batch")):
+    for bi, i in enumerate(
+        tqdm(range(0, len(pending), EMBED_BATCH_SIZE), desc=desc, unit="batch")
+    ):
         batch = pending[i : i + EMBED_BATCH_SIZE]
         vectors = emb.embed_passages([text for _, text, _ in batch])
-        store.add_batch([cid for cid, _, _ in batch], vectors, [meta for _, _, meta in batch])
+        store.add_batch(
+            [cid for cid, _, _ in batch], vectors, [meta for _, _, meta in batch]
+        )
         embedded += len(batch)
         if (bi + 1) % save_every == 0:
             store.save(save_meta)
     return embedded
 
 
-def add_yt_comments(url_or_id: str, collection: str, min_chars: int = DEFAULT_MIN_CHARS) -> dict:
+def add_yt_comments(
+    url_or_id: str, collection: str, min_chars: int = DEFAULT_MIN_CHARS
+) -> dict:
     """Индексация комментариев YouTube-видео. Чанк = комментарий (длинные дробятся)."""
     from src.youtube import extract_video_id, fetch_comments, fetch_video_info
 
@@ -230,7 +250,13 @@ def add_yt_comments(url_or_id: str, collection: str, min_chars: int = DEFAULT_MI
     print(f"Комментариев получено: {len(comments)}")
     if not comments:
         print("[skip] Комментарии отсутствуют или отключены")
-        return {"video_id": video_id, "title": info["title"], "channel": info["channel"], "comments_indexed": 0, "skipped": "no_comments"}
+        return {
+            "video_id": video_id,
+            "title": info["title"],
+            "channel": info["channel"],
+            "comments_indexed": 0,
+            "skipped": "no_comments",
+        }
 
     emb = E5Embeddings()
     store = VectorStore(collection, dim=emb.dim)
@@ -243,11 +269,21 @@ def add_yt_comments(url_or_id: str, collection: str, min_chars: int = DEFAULT_MI
 
     store.save()
     store.close()
-    print(f"Новых чанков комментариев в индексе: {embedded} (всего получено {len(comments)})")
-    return {"video_id": video_id, "title": info["title"], "channel": info["channel"], "comments_indexed": embedded, "comments_total": len(comments)}
+    print(
+        f"Новых чанков комментариев в индексе: {embedded} (всего получено {len(comments)})"
+    )
+    return {
+        "video_id": video_id,
+        "title": info["title"],
+        "channel": info["channel"],
+        "comments_indexed": embedded,
+        "comments_total": len(comments),
+    }
 
 
-def yt_transcript_chunks(video_id: str, info: dict, chunks_in: list[dict], lang: str) -> tuple[list[dict], list[Chunk]]:
+def yt_transcript_chunks(
+    video_id: str, info: dict, chunks_in: list[dict], lang: str
+) -> tuple[list[dict], list[Chunk]]:
     """Чанки транскрипции (из chunk_transcript) -> (raw_rows, чанки на эмбеддинг). Без сети/модели."""
     raw_rows: list[dict] = []
     chunks: list[Chunk] = []
@@ -282,22 +318,41 @@ def yt_transcript_chunks(video_id: str, info: dict, chunks_in: list[dict], lang:
 
 
 def add_yt_transcript(
-    url_or_id: str, collection: str, lang: str = "ru", asr: bool = False, asr_model: str = "large-v3"
+    url_or_id: str,
+    collection: str,
+    lang: str = "ru",
+    asr: bool = False,
+    asr_model: str = "large-v3",
 ) -> dict:
     """Индексация транскрипции YouTube-видео. Чанки ~500-700 символов с таймингами.
 
     asr=True — если у видео нет ни ручных, ни автоматических субтитров, распознаёт
     аудио локально через Whisper (см. src.youtube.transcribe_with_whisper).
     """
-    from src.youtube import chunk_transcript, extract_video_id, fetch_transcript, fetch_video_info
+    from src.youtube import (
+        chunk_transcript,
+        extract_video_id,
+        fetch_transcript,
+        fetch_video_info,
+    )
 
     video_id = extract_video_id(url_or_id)
     info = fetch_video_info(video_id)
     print(f"Видео: {info['channel']} — {info['title']} [{video_id}]")
-    snippets = fetch_transcript(video_id, info, lang=lang, use_asr=asr, asr_model=asr_model)
+    snippets = fetch_transcript(
+        video_id, info, lang=lang, use_asr=asr, asr_model=asr_model
+    )
     if not snippets:
-        print("[skip] Транскрипция недоступна (стрим без субтитров или субтитры отключены)")
-        return {"video_id": video_id, "title": info["title"], "channel": info["channel"], "transcript_chunks": 0, "skipped": "no_transcript"}
+        print(
+            "[skip] Транскрипция недоступна (стрим без субтитров или субтитры отключены)"
+        )
+        return {
+            "video_id": video_id,
+            "title": info["title"],
+            "channel": info["channel"],
+            "transcript_chunks": 0,
+            "skipped": "no_transcript",
+        }
 
     chunks_in = chunk_transcript(snippets)
     print(f"Реплик: {len(snippets)} -> чанков: {len(chunks_in)}")
@@ -313,8 +368,16 @@ def add_yt_transcript(
 
     store.save()
     store.close()
-    print(f"Новых чанков транскрипции в индексе: {embedded} (всего чанков {len(chunks_in)})")
-    return {"video_id": video_id, "title": info["title"], "channel": info["channel"], "transcript_chunks": embedded, "chunks_total": len(chunks_in)}
+    print(
+        f"Новых чанков транскрипции в индексе: {embedded} (всего чанков {len(chunks_in)})"
+    )
+    return {
+        "video_id": video_id,
+        "title": info["title"],
+        "channel": info["channel"],
+        "transcript_chunks": embedded,
+        "chunks_total": len(chunks_in),
+    }
 
 
 def delete_source(
@@ -343,11 +406,18 @@ def delete_source(
 
     if video_id:
         label = f"видео {video_id}"
-        ids = [i for i, m in store.docstore.items() if str(m.get("video_id")) == str(video_id)]
+        ids = [
+            i
+            for i, m in store.docstore.items()
+            if str(m.get("video_id")) == str(video_id)
+        ]
     else:
         label = f"ТГ-чат {chat_id}"
-        ids = [i for i, m in store.docstore.items()
-               if m.get("source") == "tg" and str(m.get("chat_id")) == str(chat_id)]
+        ids = [
+            i
+            for i, m in store.docstore.items()
+            if m.get("source") == "tg" and str(m.get("chat_id")) == str(chat_id)
+        ]
 
     by_src = dict(Counter(store.docstore[i].get("source") for i in ids))
     print(f"К удалению из «{collection}» ({label}): {len(ids)} векторов {by_src}")
@@ -371,7 +441,12 @@ def delete_source(
     total = store.index.ntotal if store.index else 0
     store.close()
     print(f"Удалено векторов: {removed}. Осталось в индексе: {total}")
-    return {"collection": collection, "removed_vectors": removed, "by_source": by_src, "remaining": total}
+    return {
+        "collection": collection,
+        "removed_vectors": removed,
+        "by_source": by_src,
+        "remaining": total,
+    }
 
 
 def list_collections() -> None:
@@ -401,11 +476,17 @@ def list_collections() -> None:
             print(f"  {src}: {n}")
         for chat in raw_stats["tg_chats"]:
             label = chat_names.get(str(chat["chat_id"]), "")
-            print(f"  [tg] {label} (id={chat['chat_id']}): {chat['messages']} сырых сообщений")
+            print(
+                f"  [tg] {label} (id={chat['chat_id']}): {chat['messages']} сырых сообщений"
+            )
         for v in raw_stats["yt_videos_comments"]:
-            print(f"  [yt_comments] {v['video_id']}: {v['comments']} комментариев (raw)")
+            print(
+                f"  [yt_comments] {v['video_id']}: {v['comments']} комментариев (raw)"
+            )
         for v in raw_stats["yt_videos_chunks"]:
-            print(f"  [yt_transcript] {v['video_id']} «{v['title']}»: {v['chunks']} чанков (raw)")
+            print(
+                f"  [yt_transcript] {v['video_id']} «{v['title']}»: {v['chunks']} чанков (raw)"
+            )
         store.close()
 
 
@@ -413,37 +494,68 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Индексация Telegram-чатов и YouTube в RAG")
     sub = p.add_subparsers(dest="command", required=True)
 
-    add = sub.add_parser("add-tg-chat", help="Добавить Telegram-чат в индекс (идемпотентно)")
+    add = sub.add_parser(
+        "add-tg-chat", help="Добавить Telegram-чат в индекс (идемпотентно)"
+    )
     add.add_argument("json_path", help="Путь к JSON-экспорту Telegram Desktop")
     add.add_argument("--collection", default=DEFAULT_COLLECTION)
-    add.add_argument("--min-chars", type=int, default=DEFAULT_MIN_CHARS, help="Минимум символов для эмбеддинга")
+    add.add_argument(
+        "--min-chars",
+        type=int,
+        default=DEFAULT_MIN_CHARS,
+        help="Минимум символов для эмбеддинга",
+    )
     add.add_argument("--link-template", default=DEFAULT_LINK_TEMPLATE)
-    add.add_argument("--username", default=None, help="Публичный username чата (даёт t.me/<username>/<id>)")
+    add.add_argument(
+        "--username",
+        default=None,
+        help="Публичный username чата (даёт t.me/<username>/<id>)",
+    )
     add.add_argument("--batch-size", type=int, default=EMBED_BATCH_SIZE)
 
     yc = sub.add_parser("add-yt-comments", help="Добавить комментарии YouTube-видео")
     yc.add_argument("url", help="URL или video_id")
     yc.add_argument("--collection", default=DEFAULT_COLLECTION)
     yc.add_argument("--min-chars", type=int, default=DEFAULT_MIN_CHARS)
-    yc.add_argument("--cookies-from-browser", default=None,
-                    help="Cookies для yt-dlp (обход бот-проверки): 'chrome', 'chrome:Profile 2', 'firefox'. Браузер закрыт.")
-    yc.add_argument("--cookies-file", default=None, help="Альтернатива: путь к cookies.txt")
+    yc.add_argument(
+        "--cookies-from-browser",
+        default=None,
+        help="Cookies для yt-dlp (обход бот-проверки): 'chrome', 'chrome:Profile 2', 'firefox'. Браузер закрыт.",
+    )
+    yc.add_argument(
+        "--cookies-file", default=None, help="Альтернатива: путь к cookies.txt"
+    )
 
     yt = sub.add_parser("add-yt-transcript", help="Добавить транскрипцию YouTube-видео")
     yt.add_argument("url", help="URL или video_id")
     yt.add_argument("--collection", default=DEFAULT_COLLECTION)
     yt.add_argument("--lang", default="ru")
-    yt.add_argument("--asr", action="store_true",
-                    help="Если субтитров нет (ни ручных, ни авто) — распознать аудио локально через Whisper (GPU)")
-    yt.add_argument("--asr-model", default="large-v3", help="Модель faster-whisper для --asr")
-    yt.add_argument("--cookies-from-browser", default=None,
-                    help="Cookies для yt-dlp (обход бот-проверки): 'chrome', 'chrome:Profile 2', 'firefox'. Браузер закрыт.")
-    yt.add_argument("--cookies-file", default=None, help="Альтернатива: путь к cookies.txt")
+    yt.add_argument(
+        "--asr",
+        action="store_true",
+        help="Если субтитров нет (ни ручных, ни авто) — распознать аудио локально через Whisper (GPU)",
+    )
+    yt.add_argument(
+        "--asr-model", default="large-v3", help="Модель faster-whisper для --asr"
+    )
+    yt.add_argument(
+        "--cookies-from-browser",
+        default=None,
+        help="Cookies для yt-dlp (обход бот-проверки): 'chrome', 'chrome:Profile 2', 'firefox'. Браузер закрыт.",
+    )
+    yt.add_argument(
+        "--cookies-file", default=None, help="Альтернатива: путь к cookies.txt"
+    )
 
-    dl = sub.add_parser("delete-source", help="Удалить видео или ТГ-чат из коллекции (без пересоздания, без GPU)")
+    dl = sub.add_parser(
+        "delete-source",
+        help="Удалить видео или ТГ-чат из коллекции (без пересоздания, без GPU)",
+    )
     dl.add_argument("--collection", default=DEFAULT_COLLECTION)
     grp = dl.add_mutually_exclusive_group(required=True)
-    grp.add_argument("--video", help="video_id — удалить комментарии + транскрипцию видео")
+    grp.add_argument(
+        "--video", help="video_id — удалить комментарии + транскрипцию видео"
+    )
     grp.add_argument("--chat", help="chat_id — удалить все сообщения ТГ-чата")
     dl.add_argument("--yes", action="store_true", help="Не спрашивать подтверждение")
 
@@ -465,14 +577,20 @@ def main() -> None:
         )
     elif args.command == "add-yt-comments":
         from src.youtube import set_cookie_source
+
         set_cookie_source(args.cookies_from_browser, args.cookies_file)
         add_yt_comments(args.url, args.collection, args.min_chars)
     elif args.command == "add-yt-transcript":
         from src.youtube import set_cookie_source
+
         set_cookie_source(args.cookies_from_browser, args.cookies_file)
-        add_yt_transcript(args.url, args.collection, args.lang, asr=args.asr, asr_model=args.asr_model)
+        add_yt_transcript(
+            args.url, args.collection, args.lang, asr=args.asr, asr_model=args.asr_model
+        )
     elif args.command == "delete-source":
-        delete_source(args.collection, video_id=args.video, chat_id=args.chat, assume_yes=args.yes)
+        delete_source(
+            args.collection, video_id=args.video, chat_id=args.chat, assume_yes=args.yes
+        )
     elif args.command == "list":
         list_collections()
 

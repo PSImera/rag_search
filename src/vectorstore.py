@@ -58,7 +58,9 @@ class VectorStore:
     def existing_ids(self) -> set[int]:
         return set(self.docstore.keys())
 
-    def add_batch(self, ids: list[int], vectors: np.ndarray, metadatas: list[dict[str, Any]]) -> None:
+    def add_batch(
+        self, ids: list[int], vectors: np.ndarray, metadatas: list[dict[str, Any]]
+    ) -> None:
         assert self.index is not None
         ids_arr = np.asarray(ids, dtype=np.int64)
         self.index.add_with_ids(vectors.astype(np.float32), ids_arr)  # type: ignore[call-arg]
@@ -86,10 +88,16 @@ class VectorStore:
         faiss.write_index(self.index, str(self.index_file))
         with self.docstore_file.open("wb") as f:
             pickle.dump({"dim": self.dim, "docstore": self.docstore}, f)
-        meta = {"collection": self.collection, "dim": self.dim, "vectors": self.index.ntotal}
+        meta = {
+            "collection": self.collection,
+            "dim": self.dim,
+            "vectors": self.index.ntotal,
+        }
         if extra_meta:
             meta.update(extra_meta)
-        self.meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.meta_file.write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     def search(
         self,

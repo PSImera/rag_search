@@ -41,7 +41,14 @@ class E5Embeddings:
         if "/" not in model_name:
             return model_name
         org, repo = model_name.split("/", 1)
-        snapshot_root = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{org}--{repo}" / "snapshots"
+        snapshot_root = (
+            Path.home()
+            / ".cache"
+            / "huggingface"
+            / "hub"
+            / f"models--{org}--{repo}"
+            / "snapshots"
+        )
         if snapshot_root.exists():
             snaps = [p for p in snapshot_root.iterdir() if p.is_dir()]
             if snaps:

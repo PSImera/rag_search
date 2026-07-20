@@ -21,6 +21,7 @@
     .\\.venv\\Scripts\\python.exe -m src.index add-yt-transcript <URL> --collection <имя>
 (или перезапустить пакетный ingest — он возьмёт транскрипцию из кэша, без сети).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -58,7 +59,9 @@ def parse_transcript(raw: str) -> list[dict]:
     segments: list[tuple[int, str]] = []  # (start_sec, text)
     cur_start: int | None = None
     cur_text = ""
-    filled = False  # получила ли текущая реплика свой текст (защита от глав и лишних строк)
+    filled = (
+        False  # получила ли текущая реплика свой текст (защита от глав и лишних строк)
+    )
 
     def flush() -> None:
         nonlocal cur_text, filled
@@ -75,7 +78,9 @@ def parse_transcript(raw: str) -> list[dict]:
             flush()
             h, mm, ss = m.group(1), m.group(2), m.group(3)
             cur_start = (int(h) if h else 0) * 3600 + int(mm) * 60 + int(ss)
-            rest = _LABEL.sub("", line[m.end():], count=1).strip()  # снять склеенную метку-прописью
+            rest = _LABEL.sub(
+                "", line[m.end() :], count=1
+            ).strip()  # снять склеенную метку-прописью
             cur_text = rest
             filled = bool(rest)
         elif cur_start is not None and not filled:
@@ -87,7 +92,13 @@ def parse_transcript(raw: str) -> list[dict]:
     snippets: list[dict] = []
     for i, (start, text) in enumerate(segments):
         nxt = segments[i + 1][0] if i + 1 < len(segments) else start
-        snippets.append({"text": text, "start": float(start), "duration": max(float(nxt - start), 0.0)})
+        snippets.append(
+            {
+                "text": text,
+                "start": float(start),
+                "duration": max(float(nxt - start), 0.0),
+            }
+        )
     return snippets
 
 
@@ -100,15 +111,21 @@ def main() -> None:
     ap.add_argument("url", help="URL или video_id")
     ap.add_argument("txt", help="Путь к .txt с расшифровкой из панели YouTube")
     ap.add_argument("--lang", default="ru")
-    ap.add_argument("--force", action="store_true", help="Перезаписать существующий transcript_<lang>.json")
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Перезаписать существующий transcript_<lang>.json",
+    )
     args = ap.parse_args()
 
     video_id = extract_video_id(args.url)
     raw = Path(args.txt).read_text(encoding="utf-8")
     snippets = parse_transcript(raw)
     if not snippets:
-        print("[error] Не удалось распарсить ни одной реплики с меткой времени. "
-              "Проверь, что копировал из панели «Показать расшифровку» (с таймкодами).")
+        print(
+            "[error] Не удалось распарсить ни одной реплики с меткой времени. "
+            "Проверь, что копировал из панели «Показать расшифровку» (с таймкодами)."
+        )
         sys.exit(1)
 
     d = find_video_dir(video_id)
@@ -118,15 +135,21 @@ def main() -> None:
 
     out = d / f"transcript_{args.lang}.json"
     if out.exists() and out.stat().st_size > 2 and not args.force:
-        print(f"[warn] {out.name} уже есть и не пуст ({out.stat().st_size} байт). "
-              f"Добавь --force, чтобы перезаписать.")
+        print(
+            f"[warn] {out.name} уже есть и не пуст ({out.stat().st_size} байт). "
+            f"Добавь --force, чтобы перезаписать."
+        )
         sys.exit(1)
 
     out.write_text(json.dumps(snippets, ensure_ascii=False), encoding="utf-8")
     total = snippets[-1]["start"] if snippets else 0
-    print(f"OK: {len(snippets)} реплик, до {int(total // 60)}:{int(total % 60):02d}  →  {out}")
-    print(f"Теперь заэмбеддить: .\\.venv\\Scripts\\python.exe -m src.index add-yt-transcript "
-          f"\"{args.url}\" --collection <имя>")
+    print(
+        f"OK: {len(snippets)} реплик, до {int(total // 60)}:{int(total % 60):02d}  →  {out}"
+    )
+    print(
+        f"Теперь заэмбеддить: .\\.venv\\Scripts\\python.exe -m src.index add-yt-transcript "
+        f'"{args.url}" --collection <имя>'
+    )
 
 
 if __name__ == "__main__":

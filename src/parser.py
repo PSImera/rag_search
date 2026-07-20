@@ -62,7 +62,9 @@ def iter_messages(json_path: Path) -> Iterator[dict[str, Any]]:
             }
 
 
-def make_link(link_template: str, chat_id: Any, username: str | None, message_id: int) -> str:
+def make_link(
+    link_template: str, chat_id: Any, username: str | None, message_id: int
+) -> str:
     """Формирует прямую ссылку на сообщение.
 
     Если у чата есть публичный username — t.me/<username>/<message_id>.
