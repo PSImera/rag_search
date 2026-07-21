@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -41,9 +44,15 @@ from src.youtube import (
     fetch_transcript,
     fetch_video_info,
     is_playlist_url,
+    log_progress,
     set_cookie_source,
     set_throttle,
 )
+
+
+# пул позиций для tqdm-баров: фаза 1 качает несколько видео разом, каждому нужна своя строка.
+# Размер = числу воркеров (см. main); слот берётся на время видео и возвращается после.
+_slots: queue.Queue[int] = queue.Queue()
 
 
 def download_one(video_id: str, lang: str, fetch_subs: bool = True) -> dict:
@@ -53,7 +62,36 @@ def download_one(video_id: str, lang: str, fetch_subs: bool = True) -> dict:
     распознаванием аудио.
     """
     info = fetch_video_info(video_id)
-    comments = fetch_comments(video_id, info)
+    title = (info.get("title") or "")[:30]
+
+    slot = _slots.get()
+    bar: tqdm | None = None
+
+    def on_progress(running: int, est: int) -> None:
+        # бар создаём лениво — на первом реальном счётчике (кэш-хиты/видео без комментов бар не плодят)
+        nonlocal bar
+        total = max(est, running) or None
+        if bar is None:
+            bar = tqdm(
+                total=total,
+                position=slot,
+                leave=False,
+                desc=f"{video_id} «{title}»",
+                unit=" комм.",
+                bar_format="{desc}: {n_fmt}/{total_fmt} |{bar}| {percentage:3.0f}%",
+            )
+        if total != bar.total:
+            bar.total = total
+        bar.n = running
+        bar.refresh()
+
+    try:
+        comments = fetch_comments(video_id, info, on_progress=on_progress)
+    finally:
+        if bar is not None:
+            bar.close()
+        _slots.put(slot)
+
     snippets = fetch_transcript(video_id, info, lang=lang) if fetch_subs else None
     return {
         "video_id": video_id,
@@ -156,6 +194,9 @@ def main() -> None:
     )
     status: dict[str, dict] = {}
     errors: dict[str, str] = {}
+    # по слоту-строке на воркера: столько баров одновременно, сколько потоков качают
+    for slot in range(args.download_workers):
+        _slots.put(slot)
     with ThreadPoolExecutor(max_workers=args.download_workers) as ex:
         # в режиме --asr субтитры не качаем вообще — транскрипт делается в фазе 1.5 из аудио
         futs = {
@@ -172,13 +213,13 @@ def main() -> None:
                 if st["no_transcript"]:
                     note.append("нет транскрипции")
                 tail = f"  ({', '.join(note)})" if note else ""
-                print(
-                    f"[{done}/{len(video_ids)}] {vid}  «{st['title'][:50]}»  "
+                log_progress(
+                    f"[{done}/{len(video_ids)}] ✓ {vid}  «{st['title'][:50]}»  "
                     f"комм={st['comments_raw']} субтитры={st['transcript_snippets']}{tail}"
                 )
             except Exception as exc:
                 errors[vid] = str(exc)[:200]
-                print(f"[{done}/{len(video_ids)}] {vid}  [error] {exc}")
+                log_progress(f"[{done}/{len(video_ids)}] {vid}  [error] {exc}")
 
     # ── Фаза 1.5: ASR всех видео из аудио (--asr игнорирует субтитры YouTube) ──────────
     # Последовательно, модель Whisper грузится один раз; готовый непустой кэш пропускается.

@@ -13,6 +13,53 @@ from src.config import YOUTUBE_ROOT
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
+# лок для фолбэк-вывода, если tqdm недоступен (обычно печатаем через tqdm.write)
+_print_lock = threading.Lock()
+
+
+def log_progress(msg: str) -> None:
+    """Вывод строки, не ломающий активные tqdm-бары: tqdm.write встаёт над барами и
+    потокобезопасен. Фолбэк на обычный print под локом, если tqdm нет."""
+    try:
+        from tqdm import tqdm
+
+        tqdm.write(msg)
+    except Exception:
+        with _print_lock:
+            print(msg, flush=True)
+
+
+class _CommentLogger:
+    """yt-dlp-логгер: вытаскивает живой счётчик выгрузки комментов «running/~est».
+
+    yt-dlp на каждую страницу комментов шлёт в to_screen строку вида
+    «Downloading comment … (240/~3498)»; при заданном logger она приходит сюда в debug().
+    Отдаём числа в колбэк on_progress(running, est) — вызывающий рисует ими tqdm-бар.
+    Остальной шум yt-dlp глушим.
+    """
+
+    _PROG_RE = re.compile(r"\((\d+)/~?(\d+)\)")
+
+    def __init__(self, on_progress):
+        self._on = on_progress
+
+    def debug(self, msg: str) -> None:
+        if "comment" not in msg.lower():
+            return
+        m = self._PROG_RE.search(msg)
+        if m:
+            self._on(int(m.group(1)), int(m.group(2)))
+
+    # yt-dlp может звать любой уровень; счётчик только в debug, прочее глушим
+    def info(self, msg: str) -> None:
+        self.debug(msg)
+
+    def warning(self, msg: str) -> None:
+        pass
+
+    def error(self, msg: str) -> None:
+        pass
+
 # cookies держим в памяти как текст (Netscape-формат), извлекаем ОДИН раз (см. _load_cookie_text):
 # иначе yt-dlp перечитывает и расшифровывает базу браузера на каждый YoutubeDL (≈3 раза на видео),
 # что и тормозит фазу 1, и сорит прогресс-баром «[Cookies] Searching...», и ловит «database is locked».
@@ -245,8 +292,16 @@ def fetch_video_info(video_id: str) -> dict[str, Any]:
     return slim
 
 
-def fetch_comments(video_id: str, info: dict[str, Any]) -> list[dict[str, Any]]:
+def fetch_comments(
+    video_id: str,
+    info: dict[str, Any],
+    on_progress=None,
+) -> list[dict[str, Any]]:
     """Комментарии через yt-dlp (--write-comments эквивалент). Кэш: comments.json.
+
+    on_progress(running, est) — колбэк живого счётчика выгрузки: выгрузка комментов долгая и
+    молчаливая, без индикатора процесс выглядит зависшим (см. _CommentLogger). Вызывающий рисует
+    этими числами tqdm-бар. None — без индикатора (напр. кэш-хит или вызов из фазы 2).
 
     Возвращает нормализованный список; пустой список — если комментарии отключены/недоступны.
     """
@@ -269,6 +324,9 @@ def fetch_comments(video_id: str, info: dict[str, Any]) -> list[dict[str, Any]]:
         **_cookie_opts(),
         **_throttle_opts(),
     }
+    if on_progress is not None:
+        # logger перехватывает to_screen yt-dlp (в т.ч. счётчик комментов) — гоним его в колбэк
+        opts["logger"] = _CommentLogger(on_progress)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             raw = ydl.extract_info(
