@@ -13,7 +13,7 @@ from src.config import STORE_ROOT
 from src.store import RawStore
 
 
-def chunk_id(chat_id: Any, message_id: int) -> int:
+def chunk_id(chat_id: Any, message_id: int | str) -> int:
     """Идемпотентный int64-id чанка: одно сообщение -> один устойчивый id.
 
     Повторная индексация того же (chat_id, message_id) даёт тот же id => дублей нет.

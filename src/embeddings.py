@@ -29,9 +29,11 @@ class E5Embeddings:
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         self.model = SentenceTransformer(resolved, trust_remote_code=True)
         try:
-            self.dim = self.model.get_sentence_embedding_dimension()
+            dim = self.model.get_sentence_embedding_dimension()
         except Exception:
-            self.dim = len(self.embed_query("test"))
+            dim = None
+        # get_sentence_embedding_dimension() может вернуть None — тогда меряем эмпирически
+        self.dim: int = dim if dim is not None else len(self.embed_query("test"))
 
     @staticmethod
     def _resolve_model_name(model_name: str) -> str:

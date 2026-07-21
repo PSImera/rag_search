@@ -224,7 +224,7 @@ def expand_playlist(url: str) -> list[str]:
         **_cookie_opts(),
         **_throttle_opts(),
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
+    with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore[arg-type]  # opts — не TypedDict _Params
         info = ydl.extract_info(url, download=False)
     entries = info.get("entries") or []
     return [e["id"] for e in entries if e and e.get("id")]
@@ -271,7 +271,7 @@ def fetch_video_info(video_id: str) -> dict[str, Any]:
         **_cookie_opts(),
         **_throttle_opts(),
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
+    with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore[arg-type]  # opts — не TypedDict _Params
         # process=False — берём только метаданные, без разбора форматов видео (нам они не нужны;
         # на части видео резолв формата падает «Requested format is not available»)
         info = ydl.extract_info(
@@ -328,7 +328,7 @@ def fetch_comments(
         # logger перехватывает to_screen yt-dlp (в т.ч. счётчик комментов) — гоним его в колбэк
         opts["logger"] = _CommentLogger(on_progress)
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore[arg-type]  # opts — не TypedDict _Params
             raw = ydl.extract_info(
                 f"https://www.youtube.com/watch?v={video_id}", download=False
             )
@@ -502,7 +502,7 @@ def _download_audio(video_id: str) -> Path:
         "ignore_no_formats_error": True,
         **_cookie_opts(),
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
+    with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore[arg-type]  # opts — не TypedDict _Params
         ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
     files = [f for f in tmp_dir.iterdir() if f.is_file()]
     if not files:
@@ -598,7 +598,7 @@ def _transcript_via_ytdlp(
             **_throttle_opts(),
         }
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore[arg-type]  # opts — не TypedDict _Params
                 ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
         except Exception as exc:
             print(
@@ -625,7 +625,7 @@ def parse_vtt(vtt: str) -> list[dict[str, Any]]:
 
     def flush() -> None:
         nonlocal cur_start, cur_end, cur_lines
-        if cur_start is not None and cur_lines:
+        if cur_start is not None and cur_end is not None and cur_lines:
             text = " ".join(cur_lines).strip()
             if text:
                 snippets.append(
