@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,19 +13,28 @@ from src.config import YOUTUBE_ROOT
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
+# cookies держим в памяти как текст (Netscape-формат), извлекаем ОДИН раз (см. _load_cookie_text):
+# иначе yt-dlp перечитывает и расшифровывает базу браузера на каждый YoutubeDL (≈3 раза на видео),
+# что и тормозит фазу 1, и сорит прогресс-баром «[Cookies] Searching...», и ловит «database is locked».
+# "" — уже пытались и cookies нет; None — ещё не пытались.
+_cookie_text: str | None = None
+_cookie_lock = threading.Lock()
+
 
 def set_cookie_source(
     from_browser: str | None = None, cookie_file: str | None = None
 ) -> None:
     """Задаёт источник cookies для yt-dlp (обход бот-проверки YouTube).
 
-    Точки входа зовут это из своих CLI-флагов; значения кладутся в env, чтобы их
-    подхватил каждый вызов yt-dlp (и в фазовых, и в параллельных запусках).
+    Значения кладутся в env (подхватываются любым потоком), и cookies сразу извлекаются
+    в память на главном потоке — до старта пула фазы 1, чтобы база браузера читалась однократно
+    и без гонок между воркерами.
     """
     if from_browser:
         os.environ["RAG_YT_COOKIES_FROM_BROWSER"] = from_browser
     if cookie_file:
         os.environ["RAG_YT_COOKIES_FILE"] = cookie_file
+    _load_cookie_text()  # прогрев кэша на главном потоке
 
 
 def _parse_browser_spec(spec: str) -> tuple[str, str | None, str | None, str | None]:
@@ -43,15 +54,57 @@ def _parse_browser_spec(spec: str) -> tuple[str, str | None, str | None, str | N
     )
 
 
-def _cookie_opts() -> dict[str, Any]:
-    """Опции cookies для yt-dlp из env (см. set_cookie_source). Пусто — если не заданы."""
+def _extract_cookie_jar():
+    """Единожды достаёт cookies из браузера/файла в YoutubeDLCookieJar. None — если не заданы."""
     browser = os.environ.get("RAG_YT_COOKIES_FROM_BROWSER")
     if browser:
-        return {"cookiesfrombrowser": _parse_browser_spec(browser)}
+        from yt_dlp.cookies import extract_cookies_from_browser
+
+        # extract_cookies_from_browser сам валидирует browser_name; keyring ждёт в верхнем регистре
+        name, profile, keyring, container = _parse_browser_spec(browser)
+        return extract_cookies_from_browser(
+            name,
+            profile,
+            keyring=(keyring.upper() if keyring else None),  # type: ignore[arg-type]
+            container=container,
+        )
     cookiefile = os.environ.get("RAG_YT_COOKIES_FILE")
     if cookiefile:
-        return {"cookiefile": cookiefile}
-    return {}
+        from yt_dlp.cookies import YoutubeDLCookieJar
+
+        jar = YoutubeDLCookieJar(cookiefile)
+        jar.load()
+        return jar
+    return None
+
+
+def _load_cookie_text() -> str | None:
+    """Возвращает cookies как текст Netscape, извлекая их из браузера/файла ровно один раз
+    за процесс (потокобезопасно). Пустая строка кэшируется как «cookies нет»."""
+    global _cookie_text
+    if _cookie_text is not None:
+        return _cookie_text or None
+    with _cookie_lock:
+        if _cookie_text is not None:  # другой поток успел, пока ждали лок
+            return _cookie_text or None
+        jar = _extract_cookie_jar()
+        if jar is None:
+            _cookie_text = ""
+            return None
+        buf = io.StringIO()
+        jar.save(buf)  # type: ignore[arg-type]  # сериализация в память, без файла на диске
+        _cookie_text = buf.getvalue()
+        return _cookie_text
+
+
+def _cookie_opts() -> dict[str, Any]:
+    """Опции cookies для yt-dlp. Отдаём СВЕЖИЙ StringIO на каждый вызов (yt-dlp принимает
+    файловый объект как cookiefile — см. cookies.py load_cookies): база браузера при этом
+    больше не перечитывается, а разные потоки не делят один буфер. Пусто — если cookies нет."""
+    text = _load_cookie_text()
+    if not text:
+        return {}
+    return {"cookiefile": io.StringIO(text)}
 
 
 def set_throttle(sleep_req_min: float | None = None, sleep_req_max: float | None = None) -> None:
@@ -118,6 +171,7 @@ def expand_playlist(url: str) -> list[str]:
     opts = {
         "quiet": True,
         "no_warnings": True,
+        "noprogress": True,  # глушит прогресс-бар «[Cookies] Searching...» (без \n, липнет к нашему выводу)
         "extract_flat": True,
         "skip_download": True,
         **_cookie_opts(),
@@ -164,6 +218,7 @@ def fetch_video_info(video_id: str) -> dict[str, Any]:
     opts = {
         "quiet": True,
         "no_warnings": True,
+        "noprogress": True,  # глушит прогресс-бар «[Cookies] Searching...» (без \n, липнет к нашему выводу)
         "skip_download": True,
         "extract_flat": False,
         **_cookie_opts(),
@@ -205,6 +260,7 @@ def fetch_comments(video_id: str, info: dict[str, Any]) -> list[dict[str, Any]]:
     opts = {
         "quiet": True,
         "no_warnings": True,
+        "noprogress": True,  # глушит прогресс-бар «[Cookies] Searching...» (без \n, липнет к нашему выводу)
         "skip_download": True,
         "getcomments": True,
         # часть видео не отдаёт плейбек-форматы (закрыты/недоступны), но комменты есть —
@@ -382,6 +438,7 @@ def _download_audio(video_id: str) -> Path:
     opts = {
         "quiet": True,
         "no_warnings": True,
+        "noprogress": True,  # глушит прогресс-бар «[Cookies] Searching...» (без \n, липнет к нашему выводу)
         "format": "bestaudio/best",
         "outtmpl": str(tmp_dir / "%(id)s.%(ext)s"),
         "ignore_no_formats_error": True,
@@ -471,6 +528,7 @@ def _transcript_via_ytdlp(
         opts = {
             "quiet": True,
             "no_warnings": True,
+            "noprogress": True,  # глушит прогресс-бар «[Cookies] Searching...» (без \n, липнет к выводу)
             "skip_download": True,
             "writeautomaticsub": True,
             "writesubtitles": True,
