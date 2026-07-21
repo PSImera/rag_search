@@ -54,6 +54,41 @@ def _cookie_opts() -> dict[str, Any]:
     return {}
 
 
+def set_throttle(sleep_req_min: float | None = None, sleep_req_max: float | None = None) -> None:
+    """Задаёт «вежливую» паузу между сетевыми запросами yt-dlp (антибот-троттлинг).
+
+    Комментарии тянутся все, со всеми ответами — сама пагинация в yt-dlp последовательна
+    (continuation-токены, распараллелить внутри одного видео нельзя). Чтобы не ловить бан на
+    бурсте запросов, ставим паузу между запросами (в т.ч. между страницами комментов). Значение
+    рандомизируется на каждое видео (см. _throttle_opts) — паттерн запросов «дышит», а не бьёт
+    ровным пулемётом. Как и cookies, кладётся в env, чтобы подхватилось в любом потоке фазы 1.
+
+    None/None — троттлинг выключен (прежнее поведение).
+    """
+    if sleep_req_min is not None:
+        os.environ["RAG_YT_SLEEP_REQ_MIN"] = str(sleep_req_min)
+    if sleep_req_max is not None:
+        os.environ["RAG_YT_SLEEP_REQ_MAX"] = str(sleep_req_max)
+
+
+def _throttle_opts() -> dict[str, Any]:
+    """Опции троттлинга yt-dlp из env (см. set_throttle). Значение sleep_interval_requests
+    выбирается СВЕЖИМ рандомом при каждом вызове — так у каждого видео своя пауза («хаотичность»).
+    Пусто — если троттлинг не задан.
+    """
+    import random
+
+    lo = os.environ.get("RAG_YT_SLEEP_REQ_MIN")
+    hi = os.environ.get("RAG_YT_SLEEP_REQ_MAX")
+    if not lo and not hi:
+        return {}
+    lo_f = float(lo) if lo else 0.0
+    hi_f = float(hi) if hi else lo_f
+    if hi_f < lo_f:
+        lo_f, hi_f = hi_f, lo_f
+    return {"sleep_interval_requests": round(random.uniform(lo_f, hi_f), 2)}
+
+
 def extract_video_id(url_or_id: str) -> str:
     """Достаёт video_id из youtu.be/<id>, youtube.com/watch?v=, youtube.com/live/<id> или голого id.
 
@@ -86,6 +121,7 @@ def expand_playlist(url: str) -> list[str]:
         "extract_flat": True,
         "skip_download": True,
         **_cookie_opts(),
+        **_throttle_opts(),
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
@@ -131,6 +167,7 @@ def fetch_video_info(video_id: str) -> dict[str, Any]:
         "skip_download": True,
         "extract_flat": False,
         **_cookie_opts(),
+        **_throttle_opts(),
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         # process=False — берём только метаданные, без разбора форматов видео (нам они не нужны;
@@ -174,6 +211,7 @@ def fetch_comments(video_id: str, info: dict[str, Any]) -> list[dict[str, Any]]:
         # без этого флага yt-dlp падает «Requested format is not available» ещё до выдачи комментов
         "ignore_no_formats_error": True,
         **_cookie_opts(),
+        **_throttle_opts(),
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -441,6 +479,7 @@ def _transcript_via_ytdlp(
             "outtmpl": str(Path(tmp) / "%(id)s.%(ext)s"),
             "ignore_no_formats_error": True,
             **_cookie_opts(),
+            **_throttle_opts(),
         }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:

@@ -42,6 +42,7 @@ from src.youtube import (
     fetch_video_info,
     is_playlist_url,
     set_cookie_source,
+    set_throttle,
 )
 
 
@@ -71,19 +72,25 @@ def main() -> None:
         reconfigure(encoding="utf-8")
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("list_file")
+    ap.add_argument(
+        "list_file",
+        nargs="?",
+        default="docs/video_for_seach_scientism.md",
+        help="Файл со списком ссылок (по умолчанию docs/video_for_seach_scientism.md)",
+    )
     ap.add_argument("--collection", default="scientism")
     ap.add_argument("--lang", default="ru")
     ap.add_argument("--min-chars", type=int, default=DEFAULT_MIN_CHARS)
     ap.add_argument(
         "--download-workers",
         type=int,
-        default=2,
-        help="Параллельных скачиваний в фазе 1 (осторожно с rate-limit YouTube)",
+        default=3,
+        help="Параллельных скачиваний в фазе 1. С троттлингом (--sleep-requests-*) можно "
+        "безопасно поднять до 3-4: каждое видео качается «вежливо», но несколько сразу.",
     )
     ap.add_argument(
         "--cookies-from-browser",
-        default=None,
+        default='chrome:Profile 2',
         help="Cookies для yt-dlp (обход бот-проверки): 'chrome', 'firefox', "
         "'chrome:Profile 2' и т.п. Браузер должен быть закрыт.",
     )
@@ -91,6 +98,20 @@ def main() -> None:
         "--cookies-file",
         default=None,
         help="Альтернатива: путь к cookies.txt (Netscape-формат)",
+    )
+    ap.add_argument(
+        "--sleep-requests-min",
+        type=float,
+        default=0.5,
+        help="Мин. пауза (сек) между сетевыми запросами yt-dlp, включая страницы комментов. "
+        "Антибот-троттлинг: даёт безопасно поднять --download-workers. 0 — выключить.",
+    )
+    ap.add_argument(
+        "--sleep-requests-max",
+        type=float,
+        default=2.0,
+        help="Макс. пауза (сек) между запросами. Реальная пауза — случайная из [min,max], своя "
+        "на каждое видео («хаотичность», чтобы паттерн не был ровным пулемётом).",
     )
     ap.add_argument(
         "--asr",
@@ -104,6 +125,7 @@ def main() -> None:
     args = ap.parse_args()
 
     set_cookie_source(args.cookies_from_browser, args.cookies_file)
+    set_throttle(args.sleep_requests_min, args.sleep_requests_max)
 
     lines = [
         line.strip()
