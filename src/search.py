@@ -157,6 +157,43 @@ def build_predicate(
     return lambda m: all(p(m) for p in preds)
 
 
+def execute_search(
+    store: VectorStore,
+    emb: E5Embeddings,
+    query: str,
+    k: int,
+    context: int = 0,
+    source: str | None = None,
+    author: str | None = None,
+    chat: str | None = None,
+    video: str | None = None,
+    channel: str | None = None,
+    filters: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Прогоняет поиск по уже открытым store+emb и возвращает результаты списком
+    словарей (каждый — метаданные чанка + score, плюс 'context' при context>0).
+
+    Отделено от CLI-вывода, чтобы переиспользовать из HTTP-сервера без повторной
+    загрузки модели/индекса. `store` и `emb` создаёт и кэширует вызывающая сторона."""
+    qvec = emb.embed_query(query)
+    predicate = build_predicate(
+        author=author,
+        source=source,
+        chat=chat,
+        video=video,
+        channel=channel,
+        filters=filters,
+    )
+    results = store.search(qvec, k=k, predicate=predicate)
+    out: list[dict[str, Any]] = []
+    for r in results:
+        item = dict(r)
+        if context > 0:
+            item["context"] = _get_context(store, r, context)
+        out.append(item)
+    return out
+
+
 def run_search(
     query: str,
     k: int,
@@ -172,7 +209,6 @@ def run_search(
 ) -> None:
     emb = E5Embeddings()
     store = VectorStore(collection, dim=emb.dim)
-    qvec = emb.embed_query(query)
     predicate = build_predicate(
         author=author,
         source=source,
@@ -181,6 +217,7 @@ def run_search(
         channel=channel,
         filters=filters,
     )
+    qvec = emb.embed_query(query)
     results = store.search(qvec, k=k, predicate=predicate)
 
     if as_json:

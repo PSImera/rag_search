@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAG-поиск</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__row topbar__row--main">
+      <h1 class="brand">RAG-поиск</h1>
+      <label class="field field--collection">
+        <span class="field__label">Коллекция</span>
+        <select id="collection"></select>
+      </label>
+      <form id="search-form" class="searchbox">
+        <input
+          id="query"
+          type="search"
+          placeholder="Поисковый запрос…"
+          autocomplete="off"
+          autofocus
+        />
+        <button type="submit" id="search-btn">Искать</button>
+      </form>
+    </div>
+
+    <div class="topbar__row topbar__row--filters">
+      <label class="field">
+        <span class="field__label">Тип источника</span>
+        <select id="source">
+          <option value="">все</option>
+          <option value="tg">Telegram</option>
+          <option value="yt_comments">YT-комментарии</option>
+          <option value="yt_transcript">YT-транскрипт</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="field__label">ТГ-чат</span>
+        <select id="chat"><option value="">все</option></select>
+      </label>
+      <label class="field">
+        <span class="field__label">YT-канал</span>
+        <select id="channel"><option value="">все</option></select>
+      </label>
+      <label class="field">
+        <span class="field__label">Видео</span>
+        <select id="video"><option value="">все</option></select>
+      </label>
+      <label class="field">
+        <span class="field__label">Автор</span>
+        <input id="author" type="text" placeholder="точное имя" autocomplete="off" />
+      </label>
+      <label class="field field--num">
+        <span class="field__label">k</span>
+        <input id="k" type="number" min="1" max="50" value="10" />
+      </label>
+      <label class="field field--num">
+        <span class="field__label">контекст</span>
+        <input id="context" type="number" min="0" max="10" value="3" />
+      </label>
+    </div>
+  </header>
+
+  <main id="results" class="results" aria-live="polite"></main>
+
+  <div id="status" class="status" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

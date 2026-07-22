@@ -145,6 +145,22 @@ cd D:\My_Code\rag_search
 Ссылка: https://youtu.be/KjhI4vDfMdY?t=3124
 ```
 
+## Веб-фронтенд
+
+Простой браузерный поиск поверх того же движка (папка `frontend/`, бэкенд `src/server.py`).
+
+```powershell
+.\.venv\Scripts\python.exe -m src.server            # http://127.0.0.1:8000
+.\.venv\Scripts\python.exe -m src.server --port 9000 --host 0.0.0.0
+```
+
+- Стек — только stdlib (`http.server`), новых зависимостей нет. Сервер отдаёт статику из `frontend/` и JSON-API:
+  `GET /api/collections`, `GET /api/sources?collection=X` (чаты/каналы/видео для выпадающих фильтров — читает docstore, без GPU), `POST /api/search` (тело — те же опции, что у CLI: `query, collection, k, context, source, author, chat, video, channel, filters`).
+- Модель e5 грузится ЛЕНИВО при первом поиске (первый запрос дольше). `VectorStore` кэшируется по коллекции.
+- Весь поиск идёт в одном выделенном потоке (`ThreadPoolExecutor(max_workers=1)`): сериализует GPU/faiss и держит SQLite-соединение `RawStore` в одном потоке (иначе sqlite падает на «objects created in a thread…»). Статика раздаётся параллельно (`ThreadingHTTPServer`).
+- Фронтенд разбит по функционалу: `frontend/index.html`, `css/styles.css`, `js/api.js` (fetch к API), `js/filters.js` (наполнение фильтров + сбор параметров), `js/results.js` (рендер карточек по типу источника + контекст в `<details>`), `js/app.js` (связка). ES-модули, без сборки.
+- НЕ запускать сервер параллельно с индексацией той же коллекции (запись index.faiss неатомарна).
+
 ## Правила для агента
 
 1. Всегда указывай `--collection` явно.
