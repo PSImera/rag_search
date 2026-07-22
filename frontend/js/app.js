@@ -1,7 +1,12 @@
 // Точка входа: инициализация фильтров, обработка сабмита, индикатор статуса.
 
 import { search } from "./api.js";
-import { loadCollections, loadSources, collectParams } from "./filters.js";
+import {
+  loadCollections,
+  loadSources,
+  collectParams,
+  filterVideosByChannel,
+} from "./filters.js";
 import { renderResults, renderPlaceholder } from "./results.js";
 
 const el = (id) => document.getElementById(id);
@@ -38,7 +43,7 @@ async function runSearch(ev) {
   }
   searching = true;
   el("search-btn").disabled = true;
-  setStatus("Поиск… (первый запрос грузит модель — это дольше)");
+  setStatus("Поиск…");
   try {
     const data = await search(params);
     renderResults(data.results || []);
@@ -56,6 +61,9 @@ async function runSearch(ev) {
 async function init() {
   el("search-form").addEventListener("submit", runSearch);
   el("collection").addEventListener("change", refreshSources);
+  el("channel").addEventListener("change", (e) =>
+    filterVideosByChannel(e.target.value)
+  );
 
   try {
     const collections = await loadCollections();

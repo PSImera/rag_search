@@ -31,9 +31,36 @@ export async function loadCollections() {
   return collections;
 }
 
+// Все видео текущей коллекции (кэш для фильтрации по выбранному каналу без сети).
+let _videos = [];
+
+function fillVideoSelect(videos) {
+  fillSelect(el("video"), videos, {
+    value: (v) => v.video_id,
+    label: (v) => {
+      const t = v.video_title || v.video_id;
+      return t.length > 60 ? t.slice(0, 57) + "…" : t;
+    },
+  });
+}
+
+// Оставляет в списке «Видео» только видео выбранного канала (пустой канал — все).
+// Сбрасывает выбранное видео, если оно не принадлежит новому каналу.
+export function filterVideosByChannel(channel) {
+  const videos = channel
+    ? _videos.filter((v) => v.channel === channel)
+    : _videos;
+  const current = el("video").value;
+  fillVideoSelect(videos);
+  if (current && videos.some((v) => v.video_id === current)) {
+    el("video").value = current;
+  }
+}
+
 // Подтягивает чаты/каналы/видео выбранной коллекции в выпадающие фильтры.
 export async function loadSources(collection) {
   const data = await fetchSources(collection);
+  _videos = data.videos || [];
 
   fillSelect(el("chat"), data.tg_chats || [], {
     value: (c) => c.chat_id,
@@ -43,13 +70,7 @@ export async function loadSources(collection) {
     value: (c) => c.channel,
     label: (c) => `${c.channel} (${c.count})`,
   });
-  fillSelect(el("video"), data.videos || [], {
-    value: (v) => v.video_id,
-    label: (v) => {
-      const t = v.video_title || v.video_id;
-      return t.length > 60 ? t.slice(0, 57) + "…" : t;
-    },
-  });
+  filterVideosByChannel(el("channel").value);
   return data;
 }
 

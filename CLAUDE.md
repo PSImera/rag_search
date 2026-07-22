@@ -154,11 +154,15 @@ cd D:\My_Code\rag_search
 .\.venv\Scripts\python.exe -m src.server --port 9000 --host 0.0.0.0
 ```
 
+Быстрый запуск двойным кликом — `run_server.bat` (в корне): переходит в папку проекта, берёт python из `.venv`, пробрасывает аргументы (`run_server.bat --port 9000`).
+
 - Стек — только stdlib (`http.server`), новых зависимостей нет. Сервер отдаёт статику из `frontend/` и JSON-API:
   `GET /api/collections`, `GET /api/sources?collection=X` (чаты/каналы/видео для выпадающих фильтров — читает docstore, без GPU), `POST /api/search` (тело — те же опции, что у CLI: `query, collection, k, context, source, author, chat, video, channel, filters`).
-- Модель e5 грузится ЛЕНИВО при первом поиске (первый запрос дольше). `VectorStore` кэшируется по коллекции.
+- Модель e5 И дефолтная коллекция (`DEFAULT_COLLECTION`, её faiss-индекс + docstore) грузятся ЗАРАНЕЕ при старте сервера (`engine.warmup(collection)` до `serve_forever`) — старт занимает время, зато первый поиск по ней уже быстрый (не ждёт ни модели, ни распила docstore.pkl). Первый поиск по ДРУГОЙ коллекции всё ещё ленивый (грузит её `VectorStore`). При остановке (Ctrl+C) `engine.close()` закрывает SQLite коллекций, освобождает модель и чистит кэш VRAM. `VectorStore` кэшируется по коллекции.
 - Весь поиск идёт в одном выделенном потоке (`ThreadPoolExecutor(max_workers=1)`): сериализует GPU/faiss и держит SQLite-соединение `RawStore` в одном потоке (иначе sqlite падает на «objects created in a thread…»). Статика раздаётся параллельно (`ThreadingHTTPServer`).
-- Фронтенд разбит по функционалу: `frontend/index.html`, `css/styles.css`, `js/api.js` (fetch к API), `js/filters.js` (наполнение фильтров + сбор параметров), `js/results.js` (рендер карточек по типу источника + контекст в `<details>`), `js/app.js` (связка). ES-модули, без сборки.
+- Каждый поисковый запрос через API логируется в `logs/search_history_YYYY-MM-DD.json` (JSON-массив за день: время, коллекция, запрос, применённые фильтры, результаты без тяжёлого `context`). Пишется в том же рабочем потоке, ошибки логирования не роняют поиск.
+- Фильтр «Видео» на фронте показывает только видео выбранного «YT-канала» (клиентская фильтрация по кэшу `/api/sources`, без нового запроса; при смене канала сбрасывается несовместимое видео). Пустой канал — все видео.
+- Фронтенд разбит по функционалу: `frontend/index.html`, `css/styles.css`, `js/api.js` (fetch к API), `js/filters.js` (наполнение фильтров + сбор параметров + `filterVideosByChannel`), `js/results.js` (рендер карточек по типу источника + контекст в `<details>`), `js/app.js` (связка). ES-модули, без сборки.
 - НЕ запускать сервер параллельно с индексацией той же коллекции (запись index.faiss неатомарна).
 
 ## Правила для агента

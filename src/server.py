@@ -10,10 +10,12 @@
                                        каналы, видео, авторы) — читает docstore;
     POST /api/search {json}         — семантический поиск, тело как у CLI-опций.
 
-Модель эмбеддингов грузится ЛЕНИВО при первом поиске и живёт до конца процесса;
-VectorStore кэшируется по имени коллекции. Поиск сериализуется локом (одна GPU,
-faiss-индекс на процесс). Зависимостей сверх requirements.txt не добавляет —
-только stdlib http.server.
+Модель эмбеддингов грузится ЗАРАНЕЕ при старте сервера (engine.warmup) и живёт до
+остановки, когда выгружается вместе с коллекциями (engine.close чистит SQLite и кэш
+VRAM); VectorStore кэшируется по имени коллекции. Поиск сериализуется одним рабочим
+потоком (одна GPU, faiss-индекс на процесс). Каждый запрос с результатами пишется в
+logs/search_history_YYYY-MM-DD.json. Зависимостей сверх requirements.txt не
+добавляет — только stdlib http.server.
 """
 
 from __future__ import annotations
@@ -22,11 +24,12 @@ import argparse
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from src.config import DEFAULT_COLLECTION, STORE_ROOT
+from src.config import DEFAULT_COLLECTION, LOGS_ROOT, STORE_ROOT
 from src.search import execute_search
 from src.vectorstore import VectorStore
 
@@ -41,6 +44,40 @@ _CONTENT_TYPES = {
     ".ico": "image/x-icon",
     ".png": "image/png",
 }
+
+
+def _log_search(collection: str, query: str, used: dict, results: list[dict]) -> None:
+    """Дописывает запрос и его результаты в logs/search_history_YYYY-MM-DD.json.
+
+    Файл — JSON-массив записей за день; читается-дополняется-переписывается. Вызов
+    идёт из рабочего потока поиска (max_workers=1), так что запись не гоняется. Тяжёлый
+    context из результатов не пишем — только сами карточки. Ошибки логирования
+    глушим: журнал не должен ронять сам поиск."""
+    try:
+        LOGS_ROOT.mkdir(parents=True, exist_ok=True)
+        path = LOGS_ROOT / f"search_history_{datetime.now():%Y-%m-%d}.json"
+        entry = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "collection": collection,
+            "query": query,
+            "params": {k: v for k, v in used.items() if v not in (None, 0, "")},
+            "count": len(results),
+            "results": [{k: v for k, v in r.items() if k != "context"} for r in results],
+        }
+        history: list = []
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, list):
+                    history = loaded
+            except Exception:  # noqa: BLE001 — битый файл не должен мешать
+                history = []
+        history.append(entry)
+        path.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class Engine:
@@ -63,6 +100,44 @@ class Engine:
 
             self._emb = E5Embeddings()
         return self._emb
+
+    def warmup(self, collection: str | None = None) -> None:
+        """Грузит заранее (в рабочем потоке, где всё это и живёт) модель эмбеддингов
+        и — если коллекция существует — её faiss-индекс с docstore, чтобы первый
+        поисковый запрос не ждал ни загрузки модели, ни распила docstore.pkl.
+        Блокирует до готовности."""
+
+        def _load() -> None:
+            self._get_emb()
+            if collection and (STORE_ROOT / collection).is_dir():
+                self._get_store(collection)
+
+        self._pool.submit(_load).result()
+
+    def close(self) -> None:
+        """Выгружает модель и коллекции при остановке сервера: закрывает SQLite,
+        освобождает модель и, если есть CUDA, чистит кэш VRAM. Затем гасит пул."""
+
+        def _teardown() -> None:
+            for store in self._stores.values():
+                try:
+                    store.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._stores.clear()
+            self._emb = None
+            try:
+                import torch  # локальный импорт: torch может быть не загружен
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            self._pool.submit(_teardown).result()
+        finally:
+            self._pool.shutdown(wait=True)
 
     def _get_store(self, collection: str) -> VectorStore:
         store = self._stores.get(collection)
@@ -90,20 +165,25 @@ class Engine:
         if isinstance(filters, str):
             filters = [f for f in (x.strip() for x in filters.splitlines()) if f]
 
+        used = {
+            "k": int(params.get("k") or 5),
+            "context": int(params.get("context") or 0),
+            "source": _clean(params.get("source")),
+            "author": _clean(params.get("author")),
+            "chat": _clean(params.get("chat")),
+            "video": _clean(params.get("video")),
+            "channel": _clean(params.get("channel")),
+            "filters": filters,
+        }
         store = self._get_store(collection)
-        return execute_search(
+        results = execute_search(
             store=store,
             emb=self._get_emb(),
             query=query,
-            k=int(params.get("k") or 5),
-            context=int(params.get("context") or 0),
-            source=_clean(params.get("source")),
-            author=_clean(params.get("author")),
-            chat=_clean(params.get("chat")),
-            video=_clean(params.get("video")),
-            channel=_clean(params.get("channel")),
-            filters=filters,
+            **used,
         )
+        _log_search(collection, query, used, results)
+        return results
 
 
 def list_collections() -> list[dict]:
@@ -270,13 +350,16 @@ def main() -> None:
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(engine))
     url = f"http://{args.host}:{args.port}/"
     print(f"RAG-поиск: {url}")
-    print("Модель эмбеддингов загрузится при первом запросе. Ctrl+C — остановить.")
+    print(f"Загрузка модели и коллекции {DEFAULT_COLLECTION!r}…", flush=True)
+    engine.warmup(DEFAULT_COLLECTION)
+    print("Готово. Ctrl+C — остановить.")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nОстановлено.")
+        print("\nОстановка…")
     finally:
         httpd.server_close()
+        engine.close()
 
 
 if __name__ == "__main__":
