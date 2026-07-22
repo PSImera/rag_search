@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 # Корень проекта (папка, содержащая src/).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Личные настройки пользователя (не в git) — см. .env.example.
+# override=False: реальные переменные окружения выигрывают у .env.
+load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 # Где лежат все коллекции (индексы + сырые сообщения).
 STORE_ROOT = PROJECT_ROOT / "store"
@@ -15,11 +22,6 @@ YOUTUBE_ROOT = DATA_ROOT / "youtube"
 
 # Логи и отчёты индексации.
 LOGS_ROOT = PROJECT_ROOT / "logs"
-
-# Локальная модель эмбеддингов (уже закеширована в ~/.cache/huggingface).
-# multilingual-e5-large — сильная многоязычная модель, отлично держит русский.
-# Работает офлайн, токены платного API не тратятся.
-EMBEDDING_MODEL = "intfloat/multilingual-e5-large"
 
 # e5-модели требуют префиксы "query:" / "passage:" для корректной работы.
 EMBEDDING_QUERY_PREFIX = "query: "
@@ -46,8 +48,9 @@ DEFAULT_MIN_CHARS = 20
 # на батче «простыней». ~800 символов кириллицы ≈ под 512 токенов с запасом.
 MAX_CHUNK_CHARS = 800
 
-# Дефолтная коллекция.
-DEFAULT_COLLECTION = "scientism"
-
 # Дефолтный шаблон ссылки на сообщение.
 DEFAULT_LINK_TEMPLATE = "https://t.me/c/{chat_id}/{message_id}"
+
+DEFAULT_COLLECTION = os.environ.get("RAG_DEFAULT_COLLECTION", "default")
+
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "intfloat/multilingual-e5-large")
