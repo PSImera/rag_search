@@ -255,10 +255,18 @@ def find_video_dir(video_id: str) -> Path | None:
 
 
 def fetch_video_info(video_id: str) -> dict[str, Any]:
-    """Метаданные видео через yt-dlp (без скачивания). Кэшируется в info.json."""
+    """Метаданные видео через yt-dlp (без скачивания). Кэшируется в info.json.
+
+    Кэш со старой схемой (без `live_status`) прозрачно дозагружается: поле нужно,
+    чтобы по умолчанию тянуть чат только у стримов (см. is_stream) — оно надёжно даже
+    при process=False, в отличие от is_live/was_live (те при process=False пустые).
+    """
     existing = find_video_dir(video_id)
     if existing and (existing / "info.json").exists():
-        return json.loads((existing / "info.json").read_text(encoding="utf-8"))
+        cached = json.loads((existing / "info.json").read_text(encoding="utf-8"))
+        if "live_status" in cached:
+            return cached
+        # старый кэш без live_status — переизвлечём метаданные ниже и перепишем info.json
 
     import yt_dlp
 
@@ -284,6 +292,9 @@ def fetch_video_info(video_id: str) -> dict[str, Any]:
         "duration": info.get("duration"),
         "is_live": bool(info.get("is_live")),
         "was_live": bool(info.get("was_live")),
+        # 'was_live' | 'is_live' | 'post_live' | 'not_live' | None — надёжно даже при
+        # process=False (в отличие от is_live/was_live выше); по нему определяем стрим
+        "live_status": info.get("live_status"),
     }
     d = video_dir(video_id, slim["channel"], slim["title"])
     (d / "info.json").write_text(
@@ -366,6 +377,155 @@ def fetch_comments(
         )
     cache.write_text(json.dumps(normalized, ensure_ascii=False), encoding="utf-8")
     return normalized
+
+
+def _live_chat_run_text(run: dict[str, Any]) -> str:
+    """Текст одного run сообщения чата: обычный текст, эмодзи или ссылка.
+
+    Эмодзи: стандартный unicode приходит в emojiId уже как сам символ — берём его;
+    кастомный канальный эмодзи (длинный id со слэшем) заменяем на первый :shortcut:.
+    """
+    if "text" in run:
+        return run["text"]
+    emoji = run.get("emoji")
+    if emoji:
+        eid = emoji.get("emojiId") or ""
+        if eid and "/" not in eid and len(eid) <= 8:
+            return eid
+        shortcuts = emoji.get("shortcuts") or []
+        if shortcuts:
+            return shortcuts[0]
+        return (
+            emoji.get("image", {})
+            .get("accessibility", {})
+            .get("accessibilityData", {})
+            .get("label", "")
+        )
+    return ""
+
+
+def parse_live_chat(text: str) -> list[dict[str, Any]]:
+    """Парсер live_chat.json (JSONL от yt-dlp) -> нормализованные реплики чата стрима.
+
+    Берём только текстовые реплики (liveChatTextMessageRenderer) и суперчаты
+    (liveChatPaidMessageRenderer); системные и членские события пропускаем.
+    videoOffsetTimeMsec даёт позицию реплики в видео (0 у сообщений до старта эфира) —
+    из неё строится таймкод-ссылка; timestampUsec — абсолютное время (для даты и порядка).
+    Возвращает список в хронологическом порядке (как в файле).
+    """
+    out: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        rca = obj.get("replayChatItemAction", {})
+        offset = rca.get("videoOffsetTimeMsec")
+        for action in rca.get("actions", []):
+            item = action.get("addChatItemAction", {}).get("item", {})
+            renderer = item.get("liveChatTextMessageRenderer") or item.get(
+                "liveChatPaidMessageRenderer"
+            )
+            if not renderer:
+                continue
+            runs = renderer.get("message", {}).get("runs", [])
+            msg = "".join(_live_chat_run_text(r) for r in runs).strip()
+            if not msg:
+                continue
+            ts_usec = renderer.get("timestampUsec")
+            date = ""
+            ts_int = 0
+            if ts_usec:
+                try:
+                    ts_int = int(ts_usec)
+                    date = datetime.fromtimestamp(
+                        ts_int / 1_000_000, tz=timezone.utc
+                    ).strftime("%Y-%m-%dT%H:%M:%S")
+                except (ValueError, OverflowError, OSError):
+                    ts_int = 0
+            out.append(
+                {
+                    "message_id": str(renderer.get("id") or ""),
+                    "author": (renderer.get("authorName") or {}).get("simpleText", ""),
+                    "author_id": renderer.get("authorExternalChannelId", ""),
+                    "offset_sec": max(int(offset) // 1000, 0)
+                    if offset is not None
+                    else 0,
+                    "timestamp_usec": ts_int,
+                    "date": date,
+                    "text": msg,
+                }
+            )
+    return out
+
+
+def is_stream(info: dict[str, Any]) -> bool:
+    """True — если видео это запись завершённого стрима (по live_status из info.json).
+
+    Берём `was_live` (запись эфира — есть реплей-чат) и `post_live` (эфир только что
+    завершился, реплей обрабатывается). `is_live` (идёт прямо сейчас) исключаем: реплей-чата
+    ещё нет. Обычные ролики — `not_live`/None. Поле надёжно даже при process=False, поэтому
+    определять стрим по нему дешевле и вернее, чем по `/live/` в ссылке (плейлисты
+    разворачиваются в голые video_id и этот признак теряют).
+    """
+    return (info.get("live_status") or "") in ("was_live", "post_live")
+
+
+def fetch_live_chat(video_id: str, info: dict[str, Any]) -> list[dict[str, Any]]:
+    """Реплей-чат стрима через yt-dlp (subtitleslangs=['live_chat']). Кэш: live_chat.json.
+
+    yt-dlp отдаёт чат как «субтитровый» трек live_chat в формате JSONL: качаем его во
+    временную папку, парсим в нормализованные реплики (см. parse_live_chat) и кэшируем их.
+    У обычного видео (не эфир) или у стрима с отключённым чатом трека нет — возвращаем
+    пустой список и кэшируем пустышку (повторная индексация в сеть не ходит). Обрыв/бот-блок
+    не кэшируем — следующий запуск повторит.
+    """
+    d = video_dir(video_id, info["channel"], info["title"])
+    cache = d / "live_chat.json"
+    if cache.exists():
+        return json.loads(cache.read_text(encoding="utf-8"))
+
+    import tempfile
+
+    import yt_dlp
+
+    with tempfile.TemporaryDirectory() as tmp:
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,  # глушит прогресс-бар «[Cookies] Searching...»
+            "skip_download": True,
+            "writesubtitles": True,
+            "subtitleslangs": ["live_chat"],
+            "subtitlesformat": "json",
+            "outtmpl": str(Path(tmp) / "%(id)s.%(ext)s"),
+            # часть эфиров не отдаёт плейбек-форматы, но чат-трек есть — без флага падало бы
+            "ignore_no_formats_error": True,
+            **_cookie_opts(),
+            **_throttle_opts(),
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore[arg-type]  # opts — не TypedDict _Params
+                ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+        except Exception as exc:
+            # обрыв/бот-блок/лимит — НЕ кэшируем, следующий запуск повторит
+            print(
+                f"[warn] Чат стрима {video_id} недоступен (не кэширую, повтори позже): {type(exc).__name__}"
+            )
+            return []
+        files = sorted(Path(tmp).glob("*.live_chat.json"))
+        if not files:
+            # трека чата нет (обычное видео или чат отключён) — кэшируем пустышку,
+            # чтобы повторный прогон не ходил в сеть за заведомо отсутствующим чатом
+            cache.write_text("[]", encoding="utf-8")
+            return []
+        messages = parse_live_chat(files[0].read_text(encoding="utf-8"))
+
+    cache.write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
+    return messages
 
 
 # взводится при первом IP-блоке субтитров — глушит дальнейшие сетевые попытки субтитров в этом прогоне

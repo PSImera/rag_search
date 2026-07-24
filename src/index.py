@@ -197,6 +197,65 @@ def yt_comment_chunks(
     return raw_rows, chunks
 
 
+def yt_live_chat_chunks(
+    video_id: str, info: dict, messages: list[dict], min_chars: int
+) -> tuple[list[dict], list[Chunk]]:
+    """Реплики чата стрима -> (raw_rows для SQLite, чанки на эмбеддинг). Без сети/модели.
+
+    Реплики обычно короткие; длинные (редкие суперчаты-простыни) дробятся так же, как
+    комментарии (см. MAX_CHUNK_CHARS). id чанка — yt:<vid>:lc:<message_id> (префикс lc:
+    отделяет чат от комментариев), дроблёные получают суффикс #0, #1, ...
+    Ссылка — таймкод на момент реплики: https://youtu.be/<id>?t=<offset_sec>.
+    """
+    from src.youtube import split_long_text
+
+    raw_rows: list[dict] = []
+    chunks: list[Chunk] = []
+    for msg in messages:
+        link = f"https://youtu.be/{video_id}?t={msg['offset_sec']}"
+        raw_rows.append(
+            {
+                "video_id": video_id,
+                "message_id": msg["message_id"],
+                "author": msg["author"],
+                "author_id": msg["author_id"],
+                "date": msg["date"],
+                "offset_sec": msg["offset_sec"],
+                "timestamp_usec": msg["timestamp_usec"],
+                "text": msg["text"],
+                "link": link,
+                "video_title": info["title"],
+                "channel": info["channel"],
+            }
+        )
+        if len(msg["text"]) < min_chars:
+            continue
+        pieces = split_long_text(msg["text"], MAX_CHUNK_CHARS)
+        for idx, piece in enumerate(pieces):
+            key = (
+                f"lc:{msg['message_id']}"
+                if len(pieces) == 1
+                else f"lc:{msg['message_id']}#{idx}"
+            )
+            cid = chunk_id(f"yt:{video_id}", key)
+            meta = {
+                "source": "yt_live_chat",
+                "text": piece,
+                "author": msg["author"],
+                "author_id": msg["author_id"],
+                "date": msg["date"],
+                "offset_sec": msg["offset_sec"],
+                "timestamp_usec": msg["timestamp_usec"],
+                "video_id": video_id,
+                "video_title": info["title"],
+                "channel": info["channel"],
+                "message_id": msg["message_id"],
+                "link": link,
+            }
+            chunks.append((cid, piece, meta))
+    return raw_rows, chunks
+
+
 def select_new(chunks: list[Chunk], seen: set[int]) -> list[Chunk]:
     """Отбрасывает чанки, чей id уже в seen (уже в индексе или уже собран); seen дополняется."""
     out: list[Chunk] = []
@@ -278,6 +337,50 @@ def add_yt_comments(
         "channel": info["channel"],
         "comments_indexed": embedded,
         "comments_total": len(comments),
+    }
+
+
+def add_yt_live_chat(
+    url_or_id: str, collection: str, min_chars: int = DEFAULT_MIN_CHARS
+) -> dict:
+    """Индексация реплей-чата стрима YouTube. Чанк = реплика чата (длинные дробятся)."""
+    from src.youtube import extract_video_id, fetch_live_chat, fetch_video_info
+
+    video_id = extract_video_id(url_or_id)
+    info = fetch_video_info(video_id)
+    print(f"Видео: {info['channel']} — {info['title']} [{video_id}]")
+    messages = fetch_live_chat(video_id, info)
+    print(f"Реплик чата получено: {len(messages)}")
+    if not messages:
+        print("[skip] Чат стрима отсутствует (не эфир или чат отключён)")
+        return {
+            "video_id": video_id,
+            "title": info["title"],
+            "channel": info["channel"],
+            "live_chat_indexed": 0,
+            "skipped": "no_live_chat",
+        }
+
+    emb = E5Embeddings()
+    store = VectorStore(collection, dim=emb.dim)
+    store.ensure_index(emb.dim)
+
+    raw_rows, chunks = yt_live_chat_chunks(video_id, info, messages, min_chars)
+    store.raw.upsert_yt_live_chat(raw_rows)
+    pending = select_new(chunks, store.existing_ids())
+    embedded = embed_pending(store, emb, pending, "Эмбеддинг чата стрима")
+
+    store.save()
+    store.close()
+    print(
+        f"Новых чанков чата стрима в индексе: {embedded} (всего реплик получено {len(messages)})"
+    )
+    return {
+        "video_id": video_id,
+        "title": info["title"],
+        "channel": info["channel"],
+        "live_chat_indexed": embedded,
+        "live_chat_total": len(messages),
     }
 
 
@@ -432,8 +535,11 @@ def delete_source(
 
     removed = store.remove_ids(ids)
     if video_id:
-        raw_c, raw_ch = store.raw.delete_video(str(video_id))
-        print(f"SQLite: удалено комментариев {raw_c}, чанков транскрипции {raw_ch}")
+        raw_c, raw_ch, raw_lc = store.raw.delete_video(str(video_id))
+        print(
+            f"SQLite: удалено комментариев {raw_c}, чанков транскрипции {raw_ch}, "
+            f"реплик чата {raw_lc}"
+        )
     else:
         raw_msgs = store.raw.delete_chat(str(chat_id))
         print(f"SQLite: удалено сообщений {raw_msgs}")
@@ -488,6 +594,10 @@ def list_collections() -> None:
             print(
                 f"  [yt_transcript] {v['video_id']} «{v['title']}»: {v['chunks']} чанков (raw)"
             )
+        for v in raw_stats.get("yt_videos_live_chat", []):
+            print(
+                f"  [yt_live_chat] {v['video_id']} «{v['title']}»: {v['messages']} реплик (raw)"
+            )
         store.close()
 
 
@@ -524,6 +634,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cookies для yt-dlp (обход бот-проверки): 'chrome', 'chrome:Profile 2', 'firefox'. Браузер закрыт.",
     )
     yc.add_argument(
+        "--cookies-file", default=None, help="Альтернатива: путь к cookies.txt"
+    )
+
+    lc = sub.add_parser(
+        "add-yt-live-chat", help="Добавить реплей-чат стрима YouTube"
+    )
+    lc.add_argument("url", help="URL или video_id")
+    lc.add_argument("--collection", default=DEFAULT_COLLECTION)
+    lc.add_argument("--min-chars", type=int, default=DEFAULT_MIN_CHARS)
+    lc.add_argument(
+        "--cookies-from-browser",
+        default=None,
+        help="Cookies для yt-dlp (обход бот-проверки): 'chrome', 'chrome:Profile 2', 'firefox'. Браузер закрыт.",
+    )
+    lc.add_argument(
         "--cookies-file", default=None, help="Альтернатива: путь к cookies.txt"
     )
 
@@ -582,6 +707,11 @@ def main() -> None:
 
         set_cookie_source(args.cookies_from_browser, args.cookies_file)
         add_yt_comments(args.url, args.collection, args.min_chars)
+    elif args.command == "add-yt-live-chat":
+        from src.youtube import set_cookie_source
+
+        set_cookie_source(args.cookies_from_browser, args.cookies_file)
+        add_yt_live_chat(args.url, args.collection, args.min_chars)
     elif args.command == "add-yt-transcript":
         from src.youtube import set_cookie_source
 

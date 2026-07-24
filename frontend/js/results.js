@@ -5,6 +5,7 @@ const SRC_LABEL = {
   tg: "Telegram",
   yt_comments: "YT-комментарий",
   yt_transcript: "YT-транскрипт",
+  yt_live_chat: "YT-чат стрима",
 };
 
 function esc(s) {
@@ -68,6 +69,13 @@ function renderContext(r) {
         .join("");
       groups += `<div class="ctx-group"><div class="ctx-group__label">${label}</div>${rows}</div>`;
     }
+  } else if (src === "yt_live_chat") {
+    for (const [label, key] of [["до", "before"], ["после", "after"]]) {
+      const items = ctx[key] || [];
+      if (!items.length) continue;
+      const rows = items.map((c) => ctxItem(c.text, c.author)).join("");
+      groups += `<div class="ctx-group"><div class="ctx-group__label">${label}</div>${rows}</div>`;
+    }
   } else {
     for (const [label, key] of [["до", "before"], ["после", "after"]]) {
       const items = ctx[key] || [];
@@ -98,6 +106,9 @@ function renderCard(r, i) {
   } else if (src === "yt_comments") {
     title = `<div class="card__title">${esc(r.channel)} — ${esc(r.video_title)}</div>`;
     meta = metaRow([r.author, r.date, r.likes != null ? `♥ ${r.likes}` : null]);
+  } else if (src === "yt_live_chat") {
+    title = `<div class="card__title">${esc(r.channel)} — ${esc(r.video_title)}</div>`;
+    meta = metaRow([r.author, r.date, `[${mmss(r.offset_sec)}]`]);
   } else {
     title = `<div class="card__title">${esc(r.chat_name || "Telegram")}</div>`;
     meta = metaRow([r.author, r.date]);

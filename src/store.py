@@ -59,6 +59,26 @@ class RawStore:
                 PRIMARY KEY (video_id, start_sec)
             )
             """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS yt_live_chat (
+                video_id       TEXT NOT NULL,
+                message_id     TEXT NOT NULL,
+                author         TEXT,
+                author_id      TEXT,
+                date           TEXT,
+                offset_sec     INTEGER,
+                timestamp_usec INTEGER,
+                text           TEXT,
+                link           TEXT,
+                video_title    TEXT,
+                channel        TEXT,
+                PRIMARY KEY (video_id, message_id)
+            )
+            """)
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_live_chat_ts "
+            "ON yt_live_chat (video_id, timestamp_usec)"
+        )
         self.conn.commit()
 
     def upsert_many(self, rows: Iterable[dict[str, Any]]) -> None:
@@ -228,6 +248,55 @@ class RawStore:
         to_dicts = lambda rows: [dict(zip(cols, r)) for r in rows]
         return {"before": list(reversed(to_dicts(before))), "after": to_dicts(after)}
 
+    # ---------- YouTube live chat (реплей-чат стрима) ----------
+
+    def upsert_yt_live_chat(self, rows: Iterable[dict[str, Any]]) -> None:
+        self.conn.executemany(
+            """
+            INSERT INTO yt_live_chat (video_id, message_id, author, author_id, date,
+                offset_sec, timestamp_usec, text, link, video_title, channel)
+            VALUES (:video_id, :message_id, :author, :author_id, :date,
+                :offset_sec, :timestamp_usec, :text, :link, :video_title, :channel)
+            ON CONFLICT(video_id, message_id) DO UPDATE SET
+                author=excluded.author, author_id=excluded.author_id, date=excluded.date,
+                offset_sec=excluded.offset_sec, timestamp_usec=excluded.timestamp_usec,
+                text=excluded.text, link=excluded.link,
+                video_title=excluded.video_title, channel=excluded.channel
+            """,
+            list(rows),
+        )
+        self.conn.commit()
+
+    def get_live_chat_context(
+        self, video_id: str, timestamp_usec: int, m: int
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Соседние реплики чата стрима по времени (timestamp_usec)."""
+        cols = [
+            "video_id",
+            "message_id",
+            "author",
+            "author_id",
+            "date",
+            "offset_sec",
+            "timestamp_usec",
+            "text",
+            "link",
+        ]
+        sel = (
+            "SELECT video_id, message_id, author, author_id, date, offset_sec, "
+            "timestamp_usec, text, link FROM yt_live_chat WHERE video_id=?"
+        )
+        before = self.conn.execute(
+            sel + " AND timestamp_usec < ? ORDER BY timestamp_usec DESC LIMIT ?",
+            (video_id, timestamp_usec, m),
+        ).fetchall()
+        after = self.conn.execute(
+            sel + " AND timestamp_usec > ? ORDER BY timestamp_usec ASC LIMIT ?",
+            (video_id, timestamp_usec, m),
+        ).fetchall()
+        to_dicts = lambda rows: [dict(zip(cols, r)) for r in rows]
+        return {"before": list(reversed(to_dicts(before))), "after": to_dicts(after)}
+
     # ---------- Удаление источников ----------
 
     def delete_chat(self, chat_id: str) -> int:
@@ -238,16 +307,21 @@ class RawStore:
         self.conn.commit()
         return n
 
-    def delete_video(self, video_id: str) -> tuple[int, int]:
-        """Удаляет сырые комментарии и чанки транскрипции видео. Возвращает (комментов, чанков)."""
+    def delete_video(self, video_id: str) -> tuple[int, int, int]:
+        """Удаляет сырые комментарии, чанки транскрипции и реплики чата стрима видео.
+
+        Возвращает (комментов, чанков транскрипции, реплик чата)."""
         c = self.conn.execute(
             "DELETE FROM yt_comments WHERE video_id=?", (str(video_id),)
         ).rowcount
         ch = self.conn.execute(
             "DELETE FROM yt_chunks WHERE video_id=?", (str(video_id),)
         ).rowcount
+        lc = self.conn.execute(
+            "DELETE FROM yt_live_chat WHERE video_id=?", (str(video_id),)
+        ).rowcount
         self.conn.commit()
-        return c, ch
+        return c, ch, lc
 
     def stats(self) -> dict[str, Any]:
         """Статистика по источникам для index list."""
@@ -277,6 +351,15 @@ class RawStore:
             {"video_id": r[0], "title": r[2], "chunks": r[1]}
             for r in self.conn.execute(
                 "SELECT video_id, COUNT(*), MAX(video_title) FROM yt_chunks GROUP BY video_id"
+            ).fetchall()
+        ]
+        out["yt_live_chat"] = self.conn.execute(
+            "SELECT COUNT(*) FROM yt_live_chat"
+        ).fetchone()[0]
+        out["yt_videos_live_chat"] = [
+            {"video_id": r[0], "title": r[2], "messages": r[1]}
+            for r in self.conn.execute(
+                "SELECT video_id, COUNT(*), MAX(video_title) FROM yt_live_chat GROUP BY video_id"
             ).fetchall()
         ]
         return out

@@ -33,6 +33,7 @@ from src.index import (
     embed_pending,
     select_new,
     yt_comment_chunks,
+    yt_live_chat_chunks,
     yt_transcript_chunks,
 )
 from src.vectorstore import VectorStore
@@ -41,9 +42,11 @@ from src.youtube import (
     expand_playlist,
     extract_video_id,
     fetch_comments,
+    fetch_live_chat,
     fetch_transcript,
     fetch_video_info,
     is_playlist_url,
+    is_stream,
     log_progress,
     set_cookie_source,
     set_throttle,
@@ -55,14 +58,19 @@ from src.youtube import (
 _slots: queue.Queue[int] = queue.Queue()
 
 
-def download_one(video_id: str, lang: str, fetch_subs: bool = True) -> dict:
+def download_one(
+    video_id: str, lang: str, fetch_subs: bool = True, live_chat: bool = True
+) -> dict:
     """Фаза 1 для одного видео: тянем всё в кэш, возвращаем краткий статус (без модели).
 
     fetch_subs=False (режим --asr) — субтитры не трогаем, транскрипт делается позже в фазе 1.5
     распознаванием аудио.
+    live_chat=True (по умолчанию) — у СТРИМОВ (is_stream по live_status) дополнительно тянем
+    реплей-чат в кэш; обычные ролики не трогаются (лишних запросов нет). --no-live-chat выключает.
     """
     info = fetch_video_info(video_id)
     title = (info.get("title") or "")[:30]
+    stream = live_chat and is_stream(info)
 
     slot = _slots.get()
     bar: tqdm | None = None
@@ -93,14 +101,18 @@ def download_one(video_id: str, lang: str, fetch_subs: bool = True) -> dict:
         _slots.put(slot)
 
     snippets = fetch_transcript(video_id, info, lang=lang) if fetch_subs else None
+    chat = fetch_live_chat(video_id, info) if stream else None
     return {
         "video_id": video_id,
         "title": info["title"],
         "channel": info["channel"],
         "comments_raw": len(comments),
         "transcript_snippets": len(snippets or []),
+        "is_stream": stream,
+        "live_chat_raw": len(chat or []),
         "no_comments": not comments,
         "no_transcript": not snippets,
+        "no_live_chat": stream and not chat,
     }
 
 
@@ -152,6 +164,12 @@ def main() -> None:
         "на каждое видео («хаотичность», чтобы паттерн не был ровным пулемётом).",
     )
     ap.add_argument(
+        "--no-live-chat",
+        action="store_true",
+        help="Не индексировать реплей-чат стримов. По умолчанию чат тянется автоматически "
+        "у видео, которые являются записями стримов (live_status), — обычные ролики не трогаются.",
+    )
+    ap.add_argument(
         "--asr",
         action="store_true",
         help="Игнорировать субтитры YouTube: транскрипт ВСЕХ видео строить распознаванием "
@@ -164,6 +182,7 @@ def main() -> None:
 
     set_cookie_source(args.cookies_from_browser, args.cookies_file)
     set_throttle(args.sleep_requests_min, args.sleep_requests_max)
+    live_chat_enabled = not args.no_live_chat
 
     lines = [
         line.strip()
@@ -200,7 +219,7 @@ def main() -> None:
     with ThreadPoolExecutor(max_workers=args.download_workers) as ex:
         # в режиме --asr субтитры не качаем вообще — транскрипт делается в фазе 1.5 из аудио
         futs = {
-            ex.submit(download_one, vid, args.lang, not args.asr): vid
+            ex.submit(download_one, vid, args.lang, not args.asr, live_chat_enabled): vid
             for vid in video_ids
         }
         for done, fut in enumerate(as_completed(futs), 1):
@@ -212,10 +231,15 @@ def main() -> None:
                     note.append("нет комментов")
                 if st["no_transcript"]:
                     note.append("нет транскрипции")
+                if st.get("no_live_chat"):
+                    note.append("нет чата")
                 tail = f"  ({', '.join(note)})" if note else ""
+                chat_part = (
+                    f" чат={st['live_chat_raw']}" if st.get("is_stream") else ""
+                )
                 log_progress(
                     f"[{done}/{len(video_ids)}] ✓ {vid}  «{st['title'][:50]}»  "
-                    f"комм={st['comments_raw']} субтитры={st['transcript_snippets']}{tail}"
+                    f"комм={st['comments_raw']} субтитры={st['transcript_snippets']}{chat_part}{tail}"
                 )
             except Exception as exc:
                 errors[vid] = str(exc)[:200]
@@ -268,6 +292,7 @@ def main() -> None:
             "comments_raw": st["comments_raw"],
             "comment_chunks": 0,
             "transcript_chunks": 0,
+            "live_chat_chunks": 0,
         }
 
         # кэш-хит для уже готовых (фаза 1 или 1.5); force_asr держит семантику --asr,
@@ -292,6 +317,17 @@ def main() -> None:
             entry["comment_chunks"] = len(new)
             pending.extend(new)
 
+        if live_chat_enabled and is_stream(info):
+            messages = fetch_live_chat(vid, info)  # кэш-хит из фазы 1, без сети
+            if messages:
+                raw_rows, chunks = yt_live_chat_chunks(
+                    vid, info, messages, args.min_chars
+                )
+                store.raw.upsert_yt_live_chat(raw_rows)
+                new = select_new(chunks, seen)
+                entry["live_chat_chunks"] = len(new)
+                pending.extend(new)
+
         report.append(entry)
 
     print(f"Новых чанков к эмбеддингу: {len(pending)} (со всех видео)")
@@ -310,16 +346,18 @@ def main() -> None:
 
     elapsed = time.perf_counter() - t_start
     print(f"\n\n{'='*100}\nСВОДКА\n{'='*100}")
+    chat_hdr = f" {'чат.ч':>7}" if live_chat_enabled else ""
     print(
-        f"{'video_id':<13} {'канал':<24} {'название':<38} {'комм.ч':>7} {'транскр.ч':>9}  примечание"
+        f"{'video_id':<13} {'канал':<24} {'название':<38} {'комм.ч':>7} {'транскр.ч':>9}{chat_hdr}  примечание"
     )
     for e in report:
         note = e.get("error", "")
         title = (e.get("title") or "")[:36]
         channel = (e.get("channel") or "")[:22]
+        chat_col = f" {e.get('live_chat_chunks', 0):>7}" if live_chat_enabled else ""
         print(
             f"{e['video_id']:<13} {channel:<24} {title:<38} "
-            f"{e.get('comment_chunks', 0):>7} {e.get('transcript_chunks', 0):>9}  {note}"
+            f"{e.get('comment_chunks', 0):>7} {e.get('transcript_chunks', 0):>9}{chat_col}  {note}"
         )
     print(
         f"\nНовых чанков в индексе: {embedded} | всего векторов: {total_vectors} | "

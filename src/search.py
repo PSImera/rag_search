@@ -37,6 +37,10 @@ def _get_context(store: VectorStore, r: dict, m: int) -> dict:
         return store.raw.get_comment_thread(r["video_id"], r["comment_id"], m)
     if src == "yt_transcript":
         return store.raw.get_chunk_context(r["video_id"], int(r["start_sec"]), m)
+    if src == "yt_live_chat":
+        return store.raw.get_live_chat_context(
+            r["video_id"], int(r.get("timestamp_usec") or 0), m
+        )
     return store.raw.get_context(str(r["chat_id"]), int(r["message_id"]), m)
 
 
@@ -78,6 +82,24 @@ def _print_result(store: VectorStore, i: int, r: dict, context: int) -> None:
                     print(
                         f"    [{c.get('date','')}] {c.get('author','')}: {c.get('text','')}"
                     )
+        return
+    if src == "yt_live_chat":
+        print(f"Видео: {r.get('channel','')} — {r.get('video_title','')}")
+        print(
+            f"Автор: {r.get('author','')}   Дата: {r.get('date','')}   "
+            f"Таймкод: [{_mmss(r.get('offset_sec', 0))}]"
+        )
+        print(f"Текст: {r.get('text','')}")
+        print(f"Ссылка: {r.get('link','')}")
+        if context > 0:
+            ctx = _get_context(store, r, context)
+            for label, items in (("до", ctx["before"]), ("после", ctx["after"])):
+                if items:
+                    print(f"  --- {label} ---")
+                    for c in items:
+                        print(
+                            f"    [{_mmss(c.get('offset_sec', 0))}] {c.get('author','')}: {c.get('text','')}"
+                        )
         return
     # tg
     print(f"Чат: {r.get('chat_name','')}")
@@ -264,7 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--source",
         default=None,
-        choices=["tg", "yt_comments", "yt_transcript"],
+        choices=["tg", "yt_comments", "yt_transcript", "yt_live_chat"],
         help="Фильтр по типу источника",
     )
     p.add_argument(

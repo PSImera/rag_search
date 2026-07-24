@@ -38,7 +38,7 @@ def collect(collection: str) -> dict:
                 rec["chunks"] += 1
                 if not rec["chat_name"] and m.get("chat_name"):
                     rec["chat_name"] = m["chat_name"]
-            else:  # yt_comments / yt_transcript
+            else:  # yt_comments / yt_transcript / yt_live_chat
                 vid = str(m.get("video_id", ""))
                 rec = videos.setdefault(
                     vid,
@@ -47,6 +47,7 @@ def collect(collection: str) -> dict:
                         "channel": m.get("channel") or "",
                         "yt_comments": 0,
                         "yt_transcript": 0,
+                        "yt_live_chat": 0,
                     },
                 )
                 rec[src] = rec.get(src, 0) + 1
@@ -113,18 +114,19 @@ def render(collection: str, data: dict) -> str:
         lines.append("")
         lines.append(
             'Фильтр: `--video <video_id>` (точно) или `--video "<часть названия>"` (подстрока). '
-            "Столбцы «комм.»/«транскр.» — число проиндексированных чанков каждого типа "
-            "(0 = источник не добавлен)."
+            "Столбцы «комм.»/«транскр.»/«чат» — число проиндексированных чанков каждого типа "
+            "(0 = источник не добавлен; «чат» — реплей-чат стрима)."
         )
         lines.append("")
-        lines.append("| video_id | Канал | Название | комм. | транскр. |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| video_id | Канал | Название | комм. | транскр. | чат |")
+        lines.append("|---|---|---|---|---|---|")
         for vid, rec in sorted(
             videos.items(), key=lambda kv: (kv[1]["channel"], kv[1]["video_title"])
         ):
             lines.append(
                 f"| `{vid}` | {rec['channel']} | {rec['video_title']} "
-                f"| {rec.get('yt_comments', 0)} | {rec.get('yt_transcript', 0)} |"
+                f"| {rec.get('yt_comments', 0)} | {rec.get('yt_transcript', 0)} "
+                f"| {rec.get('yt_live_chat', 0)} |"
             )
     else:
         lines.append("_нет_")

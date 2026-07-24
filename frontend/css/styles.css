@@ -10,6 +10,7 @@
   --tg: #3ea6ff;
   --yt-c: #ff6b6b;
   --yt-t: #ffb454;
+  --yt-lc: #5edc9c;
   --radius: 10px;
 }
 
@@ -125,6 +126,7 @@ select:focus, input:focus {
 .card--tg { border-left-color: var(--tg); }
 .card--yt_comments { border-left-color: var(--yt-c); }
 .card--yt_transcript { border-left-color: var(--yt-t); }
+.card--yt_live_chat { border-left-color: var(--yt-lc); }
 
 .card__head {
   display: flex;
@@ -147,6 +149,7 @@ select:focus, input:focus {
 .badge--tg { background: #143a5c; color: var(--tg); }
 .badge--yt_comments { background: #4a1f1f; color: var(--yt-c); }
 .badge--yt_transcript { background: #4a3410; color: var(--yt-t); }
+.badge--yt_live_chat { background: #123a2a; color: var(--yt-lc); }
 
 .card__rank { color: var(--text-dim); font-size: 13px; }
 .card__score {
